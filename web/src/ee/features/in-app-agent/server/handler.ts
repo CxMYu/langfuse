@@ -35,12 +35,24 @@ import {
   createRun,
   ensureOwnedConversation,
   finishRun,
+  getConversationEvents,
   getConversationMessagesForReplay,
   maybeInferAndPersistConversationTitle,
+  getSandboxToolCallFiles,
   replaceRunEvents,
   shouldFlushPersistedEvent,
   toPersistableAgentEvent,
 } from "@/src/ee/features/in-app-agent/server/persistence";
+import {
+  createDockerSandboxProvider,
+  createDisabledSandboxProvider,
+  createInAppAgentSandbox,
+  createLambdaMicrovmSandboxProvider,
+} from "@/src/ee/features/in-app-agent/server/sandbox";
+import {
+  getDefaultInAppAgentSandboxProviderName,
+  getInAppAgentSandboxSnapshotStore,
+} from "@/src/ee/features/in-app-agent/server/sandbox/config";
 import { getLangfuseClient } from "@/src/features/natural-language-filters/server/utils";
 import { getAuthOptions } from "@/src/server/auth";
 import { hasEntitlement } from "@/src/features/entitlements/server/hasEntitlement";
@@ -73,6 +85,14 @@ import {
 
 const IN_APP_AGENT_API_KEY_NOTE = "In-app agent MCP session";
 const MAX_IN_APP_AGENT_INPUT_BYTES = 1024 * 1024;
+const IN_APP_AGENT_SANDBOX_TTL_MS = 15 * 60 * 1000;
+
+let sharedDockerSandboxProvider:
+  | ReturnType<typeof createDockerSandboxProvider>
+  | undefined;
+let sharedLambdaSandboxProvider:
+  | ReturnType<typeof createLambdaMicrovmSandboxProvider>
+  | undefined;
 
 export default async function handler(request: Request) {
   try {
@@ -262,6 +282,35 @@ export default async function handler(request: Request) {
     const resumeApprovalRequest = isResumeAgentInput(sanitizedInput)
       ? sanitizedInput.forwardedProps.command.resume.approvalRequest
       : undefined;
+    const sandbox = await createInAppAgentSandbox({
+      conversationId: conversation.id,
+      projectId,
+      providerSessionId: conversation.providerSessionId,
+      sandboxExpiresAt: conversation.sandboxExpiresAt,
+      sandboxProvider: conversation.sandboxProvider,
+      sandboxSnapshotKey: conversation.sandboxSnapshotKey,
+      ttlMs: IN_APP_AGENT_SANDBOX_TTL_MS,
+      provider: getInAppAgentSandboxProvider(),
+      getToolCallFiles: async () =>
+        getSandboxToolCallFiles(
+          await getConversationEvents({
+            prisma,
+            projectId,
+            conversationId: conversation.id,
+          }),
+        ),
+      saveState: async (state) => {
+        await prisma.inAppAgentConversation.update({
+          where: {
+            id_projectId: {
+              id: conversation.id,
+              projectId,
+            },
+          },
+          data: state,
+        });
+      },
+    });
 
     return await withInAppAgentMcpApiKeyCleanup(
       {
@@ -453,6 +502,7 @@ export default async function handler(request: Request) {
               },
               langfuseClient,
               useLocalPrompt,
+              sandbox,
               langfuseTracing: (() => {
                 if (!project.organization.aiTelemetryEnabled) {
                   return undefined;
@@ -539,6 +589,39 @@ export default async function handler(request: Request) {
 
     throw err;
   }
+}
+
+function getInAppAgentSandboxProvider() {
+  if (env.NODE_ENV === "test") {
+    return createDisabledSandboxProvider("test-disabled");
+  }
+
+  const providerName = getDefaultInAppAgentSandboxProviderName();
+
+  if (providerName === "dangerous-docker") {
+    sharedDockerSandboxProvider ??= createDockerSandboxProvider({
+      image: env.LANGFUSE_IN_APP_AGENT_SANDBOX_DOCKER_IMAGE,
+      snapshotStore: getInAppAgentSandboxSnapshotStore(providerName),
+    });
+    return sharedDockerSandboxProvider;
+  }
+
+  if (providerName === "lambda-microvm") {
+    if (!env.LANGFUSE_IN_APP_AGENT_SANDBOX_SNAPSHOT_BUCKET) {
+      throw new Error(
+        "LANGFUSE_IN_APP_AGENT_SANDBOX_SNAPSHOT_BUCKET is required for lambda-microvm sandboxes.",
+      );
+    }
+
+      sharedLambdaSandboxProvider ??= createLambdaMicrovmSandboxProvider({
+        endpoint: env.LANGFUSE_IN_APP_AGENT_SANDBOX_AWS_LAMBDA_ENDPOINT,
+        functionName: env.LANGFUSE_IN_APP_AGENT_SANDBOX_AWS_LAMBDA_FUNCTION_NAME,
+        snapshotStore: getInAppAgentSandboxSnapshotStore(providerName),
+      });
+    return sharedLambdaSandboxProvider;
+  }
+
+  return createDisabledSandboxProvider(providerName);
 }
 
 type SessionUser = NonNullable<Session["user"]>;
