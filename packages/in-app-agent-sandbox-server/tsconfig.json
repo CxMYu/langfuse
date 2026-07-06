@@ -9,6 +9,6 @@
     "target": "es2024",
     "types": ["node"]
   },
-  "include": ["server.ts"],
+  "include": ["server.ts", "toolRunner.ts"],
   "exclude": ["node_modules", "dist"]
 }

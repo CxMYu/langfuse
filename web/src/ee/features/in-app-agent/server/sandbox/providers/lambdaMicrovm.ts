@@ -54,17 +54,10 @@ export function createLambdaMicrovmSandboxProvider(params: {
     ...(params.endpoint ? { endpoint: params.endpoint } : {}),
   });
   const sessions = new Map<string, LambdaMicrovmSession>();
-  const timers = new Map<string, ReturnType<typeof setTimeout>>();
   const bridgePort = params.bridgePort ?? DEFAULT_BRIDGE_PORT;
 
   const ensureSession = async (sessionId?: string | null) => {
     if (sessionId) {
-      const timer = timers.get(sessionId);
-      if (timer) {
-        clearTimeout(timer);
-        timers.delete(sessionId);
-      }
-
       const existing = await getMicrovm(client, sessionId);
       if (existing) {
         if (existing.state === "SUSPENDED") {
@@ -197,36 +190,20 @@ export function createLambdaMicrovmSandboxProvider(params: {
         ...(timeoutMs ? { timeoutMs } : {}),
       });
     },
-    async scheduleSuspension({ sessionId, expiresAt }) {
-      const existingTimer = timers.get(sessionId);
-      if (existingTimer) {
-        clearTimeout(existingTimer);
-      }
+    async suspendSession({ sessionId }) {
+      sessions.delete(sessionId);
 
-      const delayMs = Math.max(0, expiresAt.getTime() - Date.now());
-      const timer = setTimeout(async () => {
-        try {
-          await client.send(
-            new SuspendMicrovmCommand({ microvmIdentifier: sessionId }),
-          );
-        } catch (error) {
-          if (!isMissingMicrovmError(error)) {
-            throw error;
-          }
-        } finally {
-          timers.delete(sessionId);
+      try {
+        await client.send(
+          new SuspendMicrovmCommand({ microvmIdentifier: sessionId }),
+        );
+      } catch (error) {
+        if (!isMissingMicrovmError(error)) {
+          throw error;
         }
-      }, delayMs);
-
-      timers.set(sessionId, timer);
+      }
     },
     async terminateSession({ sessionId }) {
-      const existingTimer = timers.get(sessionId);
-      if (existingTimer) {
-        clearTimeout(existingTimer);
-        timers.delete(sessionId);
-      }
-
       sessions.delete(sessionId);
 
       try {

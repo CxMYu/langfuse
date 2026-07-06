@@ -48,7 +48,25 @@ export async function createInAppAgentSandbox(params: {
   };
 
   const ensureSession = async () => {
+    if (
+      sessionId !== null &&
+      params.provider.suspendSession &&
+      sandboxProvider === params.provider.name &&
+      sandboxExpiresAt !== null &&
+      sandboxExpiresAt.getTime() <= now().getTime()
+    ) {
+      await params.provider.suspendSession({
+        sessionId,
+        snapshotKey,
+      });
+      sessionId = null;
+      sandboxExpiresAt = null;
+      sessionIsKnownActive = false;
+      await persistState();
+    }
+
     const session = await params.provider.ensureSession({
+      conversationId: params.conversationId,
       sessionId: sessionIsKnownActive ? sessionId : null,
       snapshotKey,
     });
@@ -97,16 +115,11 @@ export async function createInAppAgentSandbox(params: {
         timeoutMs,
       }),
     onTurnEnded: async () => {
-      if (!sessionId || !params.provider.scheduleSuspension) {
+      if (!sessionId) {
         return;
       }
 
       sandboxExpiresAt = new Date(now().getTime() + params.ttlMs);
-      await params.provider.scheduleSuspension({
-        sessionId,
-        snapshotKey,
-        expiresAt: sandboxExpiresAt,
-      });
       await persistState();
     },
   };

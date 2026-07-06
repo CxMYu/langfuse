@@ -77,6 +77,12 @@ function getInAppAgentSandboxProvider(
     });
   }
 
+  if (!env.LANGFUSE_IN_APP_AGENT_SANDBOX_AWS_LAMBDA_MICROVM_IMAGE_IDENTIFIER) {
+    throw new Error(
+      "LANGFUSE_IN_APP_AGENT_SANDBOX_AWS_LAMBDA_MICROVM_IMAGE_IDENTIFIER is required for lambda-microvm sandboxes.",
+    );
+  }
+
   return createLambdaMicrovmSandboxProvider({
     endpoint: env.LANGFUSE_IN_APP_AGENT_SANDBOX_AWS_LAMBDA_MICROVM_ENDPOINT,
     imageIdentifier:

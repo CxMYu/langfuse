@@ -33,7 +33,6 @@ export function createDockerSandboxProvider(params: {
 }): SandboxProvider {
   const docker = new Docker();
   const sessions = new Map<string, DockerSandboxSession>();
-  const timers = new Map<string, ReturnType<typeof setTimeout>>();
 
   const ensureContainer = async (containerId: string) => {
     logger.debug("In-app agent docker sandbox inspecting existing container", {
@@ -57,16 +56,24 @@ export function createDockerSandboxProvider(params: {
     return container;
   };
 
-  const createContainer = async (snapshotKey: string) => {
+  const createContainer = async (createParams: {
+    conversationId: string;
+    snapshotKey: string;
+  }) => {
     let container: Docker.Container;
+    const containerName = getDockerSandboxContainerName(
+      createParams.conversationId,
+    );
 
     try {
       logger.debug("In-app agent docker sandbox creating container", {
         image: params.image,
-        snapshotKey,
+        snapshotKey: createParams.snapshotKey,
+        containerName,
       });
       container = await docker.createContainer({
         Image: params.image,
+        name: containerName,
         WorkingDir: "/workspace",
         AttachStdout: true,
         AttachStderr: true,
@@ -91,18 +98,20 @@ export function createDockerSandboxProvider(params: {
       containerId: container.id,
     });
 
-    const snapshot = await params.snapshotStore.getSnapshot(snapshotKey);
+    const snapshot = await params.snapshotStore.getSnapshot(
+      createParams.snapshotKey,
+    );
     if (snapshot) {
       logger.debug("In-app agent docker sandbox restoring snapshot", {
         containerId: container.id,
-        snapshotKey,
+        snapshotKey: createParams.snapshotKey,
         snapshotBytes: snapshot.length,
       });
       await container.putArchive(Buffer.from(snapshot), { path: "/" });
     } else {
       logger.debug("In-app agent docker sandbox has no snapshot to restore", {
         containerId: container.id,
-        snapshotKey,
+        snapshotKey: createParams.snapshotKey,
       });
     }
 
@@ -111,20 +120,29 @@ export function createDockerSandboxProvider(params: {
     return container;
   };
 
+  const suspendSession = async (sessionId: string, snapshotKey: string) => {
+    try {
+      const container = await ensureContainer(sessionId);
+      const archive = await container.getArchive({ path: "/workspace" });
+      await params.snapshotStore.putSnapshot(
+        snapshotKey,
+        await readStreamToUint8Array(archive),
+      );
+      await container.remove({ force: true, v: true }).catch(() => undefined);
+    } finally {
+      sessions.delete(sessionId);
+    }
+  };
+
   return {
     name: "dangerous-docker",
-    async ensureSession({ sessionId, snapshotKey }) {
+    async ensureSession({ conversationId, sessionId, snapshotKey }) {
       logger.debug("In-app agent docker sandbox ensureSession", {
+        conversationId,
         requestedSessionId: sessionId,
         snapshotKey,
       });
       if (sessionId) {
-        const timer = timers.get(sessionId);
-        if (timer) {
-          clearTimeout(timer);
-          timers.delete(sessionId);
-        }
-
         try {
           await ensureContainer(sessionId);
           await waitForSandboxServer(docker.getContainer(sessionId));
@@ -141,7 +159,10 @@ export function createDockerSandboxProvider(params: {
         }
       }
 
-      const container = await createContainer(snapshotKey);
+      const container = await createContainer({
+        conversationId,
+        snapshotKey,
+      });
       logger.debug("In-app agent docker sandbox created new session", {
         sessionId: container.id,
         snapshotKey,
@@ -192,38 +213,10 @@ export function createDockerSandboxProvider(params: {
         toolCallFiles: getSession(sessions, sessionId).toolCallFiles,
       });
     },
-    async scheduleSuspension({ sessionId, snapshotKey, expiresAt }) {
-      const existingTimer = timers.get(sessionId);
-      if (existingTimer) {
-        clearTimeout(existingTimer);
-      }
-
-      const delayMs = Math.max(0, expiresAt.getTime() - Date.now());
-      const timer = setTimeout(async () => {
-        try {
-          const container = await ensureContainer(sessionId);
-          const archive = await container.getArchive({ path: "/workspace" });
-          await params.snapshotStore.putSnapshot(
-            snapshotKey,
-            await readStreamToUint8Array(archive),
-          );
-          await container
-            .remove({ force: true, v: true })
-            .catch(() => undefined);
-        } finally {
-          sessions.delete(sessionId);
-          timers.delete(sessionId);
-        }
-      }, delayMs);
-      timers.set(sessionId, timer);
+    async suspendSession({ sessionId, snapshotKey }) {
+      await suspendSession(sessionId, snapshotKey);
     },
     async terminateSession({ sessionId }) {
-      const existingTimer = timers.get(sessionId);
-      if (existingTimer) {
-        clearTimeout(existingTimer);
-        timers.delete(sessionId);
-      }
-
       sessions.delete(sessionId);
 
       await docker
@@ -653,7 +646,7 @@ function formatContainerState(inspect: DockerContainerInspect) {
 
 function isMissingDockerImageError(error: unknown) {
   return (
-    Boolean(error) &&
+    error !== null &&
     typeof error === "object" &&
     "statusCode" in error &&
     error.statusCode === 404 &&
@@ -661,4 +654,15 @@ function isMissingDockerImageError(error: unknown) {
     typeof error.message === "string" &&
     error.message.includes("No such image")
   );
+}
+
+function getDockerSandboxContainerName(conversationId: string) {
+  const sanitizedConversationId = conversationId
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_.-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 48);
+
+  return `langfuse-in-app-agent-sandbox-${sanitizedConversationId || "unknown"}`;
 }

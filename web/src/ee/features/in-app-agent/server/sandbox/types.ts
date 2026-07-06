@@ -6,6 +6,7 @@ export type SandboxFile = {
 export type SandboxProvider = {
   name: string;
   ensureSession(params: {
+    conversationId: string;
     sessionId?: string | null;
     snapshotKey: string;
   }): Promise<{ sessionId: string }>;
@@ -30,10 +31,9 @@ export type SandboxProvider = {
     command: string;
     timeoutMs?: number;
   }): Promise<unknown>;
-  scheduleSuspension?(params: {
+  suspendSession?(params: {
     sessionId: string;
     snapshotKey: string;
-    expiresAt: Date;
   }): Promise<void> | void;
   terminateSession?(params: { sessionId: string }): Promise<void> | void;
 };
