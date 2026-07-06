@@ -2,24 +2,32 @@ import { rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import {
+  LambdaMicrovmsClient,
+  SuspendMicrovmCommand,
+} from "@aws-sdk/client-lambda-microvms";
 import { DeleteObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import Docker from "dockerode";
 
 import { env } from "../../env";
 
-function getDefaultProviderName() {
-  return (
-    env.LANGFUSE_IN_APP_AGENT_SANDBOX_PROVIDER ??
-    (env.NODE_ENV === "development" ? "dangerous-docker" : "lambda-microvm")
-  );
-}
+type InAppAgentSandboxProviderType = "dangerous-docker" | "lambda-microvm";
 
 export async function deleteInAppAgentSandboxSnapshot(params: {
-  providerName?: string | null;
+  providerType: InAppAgentSandboxProviderType;
   snapshotKey: string;
+  sessionId?: string | null;
 }) {
-  const providerName = params.providerName ?? getDefaultProviderName();
+  const providerType = params.providerType;
 
-  if (providerName === "dangerous-docker") {
+  if (providerType === "dangerous-docker") {
+    if (params.sessionId) {
+      await new Docker()
+        .getContainer(params.sessionId)
+        .remove({ force: true, v: true })
+        .catch(() => undefined);
+    }
+
     const baseDir =
       env.LANGFUSE_IN_APP_AGENT_SANDBOX_LOCAL_SNAPSHOT_DIR ??
       path.join(os.tmpdir(), "langfuse-sandboxes");
@@ -27,6 +35,21 @@ export async function deleteInAppAgentSandboxSnapshot(params: {
       () => undefined,
     );
     return;
+  }
+
+  if (params.sessionId) {
+    const client = new LambdaMicrovmsClient({
+      ...(env.LANGFUSE_IN_APP_AGENT_SANDBOX_AWS_LAMBDA_MICROVM_ENDPOINT
+        ? {
+            endpoint:
+              env.LANGFUSE_IN_APP_AGENT_SANDBOX_AWS_LAMBDA_MICROVM_ENDPOINT,
+          }
+        : {}),
+    });
+
+    await client
+      .send(new SuspendMicrovmCommand({ microvmIdentifier: params.sessionId }))
+      .catch(() => undefined);
   }
 
   if (!env.LANGFUSE_IN_APP_AGENT_SANDBOX_SNAPSHOT_BUCKET) {
@@ -59,7 +82,9 @@ export async function deleteInAppAgentSandboxSnapshot(params: {
     /\/+$/u,
     "",
   );
-  const objectKey = prefix ? `${prefix}/${params.snapshotKey}` : params.snapshotKey;
+  const objectKey = prefix
+    ? `${prefix}/${params.snapshotKey}`
+    : params.snapshotKey;
 
   await client.send(
     new DeleteObjectCommand({

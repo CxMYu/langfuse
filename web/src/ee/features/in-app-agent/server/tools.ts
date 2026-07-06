@@ -408,14 +408,13 @@ export function createSandboxTools(sandbox: InAppAgentSandbox) {
   return {
     read: createTool({
       id: "read",
-      description: "Read a file from the current conversation sandbox.",
+      description: "Read a file.",
       inputSchema: z.object({ path: z.string().min(1) }),
       execute: async ({ path }) => sandbox.read({ path }),
     }),
     write: createTool({
       id: "write",
-      description:
-        "Create or overwrite a file in the current conversation sandbox.",
+      description: "Create or overwrite a file.",
       inputSchema: z.object({
         path: z.string().min(1),
         content: z.string(),
@@ -424,7 +423,7 @@ export function createSandboxTools(sandbox: InAppAgentSandbox) {
     }),
     edit: createTool({
       id: "edit",
-      description: "Replace an exact text span inside a sandbox file with new text.",
+      description: "Replace an exact text span inside a file with new text.",
       inputSchema: z.object({
         path: z.string().min(1),
         oldText: z.string(),
@@ -435,7 +434,7 @@ export function createSandboxTools(sandbox: InAppAgentSandbox) {
     }),
     bash: createTool({
       id: "bash",
-      description: "Run a shell command inside the current conversation sandbox.",
+      description: "Run a shell command.",
       inputSchema: z.object({
         command: z.string().min(1),
         timeoutMs: z.number().int().positive().max(120_000).optional(),

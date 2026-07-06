@@ -60,7 +60,7 @@ const defaultInAppAgentUserAccess = {
   isAdmin: false,
 };
 
-  async function createTestSandbox() {
+async function createTestSandbox() {
   let sandboxState: {
     providerSessionId: string | null;
     sandboxExpiresAt: Date | null;
@@ -89,10 +89,10 @@ const defaultInAppAgentUserAccess = {
         return { sessionId };
       }
 
-        activeSessionId = `sandbox-session-${sessionCounter++}`;
-        files.clear();
-        for (const [path, content] of suspendedFiles.entries()) {
-          files.set(path, content);
+      activeSessionId = `sandbox-session-${sessionCounter++}`;
+      files.clear();
+      for (const [path, content] of suspendedFiles.entries()) {
+        files.set(path, content);
       }
       return { sessionId: activeSessionId };
     },
@@ -122,10 +122,13 @@ const defaultInAppAgentUserAccess = {
     },
     scheduleSuspension({ expiresAt }) {
       if (suspensionTimer) clearTimeout(suspensionTimer);
-      suspensionTimer = setTimeout(() => {
-        suspendedFiles = new Map(files.entries());
-        activeSessionId = null;
-      }, Math.max(0, expiresAt.getTime() - Date.now()));
+      suspensionTimer = setTimeout(
+        () => {
+          suspendedFiles = new Map(files.entries());
+          activeSessionId = null;
+        },
+        Math.max(0, expiresAt.getTime() - Date.now()),
+      );
     },
   };
 
@@ -663,11 +666,11 @@ describe("createAgUiStream", () => {
     };
     const persistedEvents: AgUiEvent[] = [];
     const eventOrder: string[] = [];
-      const langfuseClient = {
-        getPrompt: promptMocks.getPrompt,
-      };
-      const sandbox = await createTestSandbox();
-      adapterEvents.inputs = [];
+    const langfuseClient = {
+      getPrompt: promptMocks.getPrompt,
+    };
+    const sandbox = await createTestSandbox();
+    adapterEvents.inputs = [];
 
     adapterEvents.items = [
       {
@@ -723,15 +726,15 @@ describe("createAgUiStream", () => {
           userAccess: defaultInAppAgentUserAccess,
           runOverride: "run-override",
         },
-          redirectAction: {
-            projectId: "project-1",
-            isV4Enabled: false,
-          },
-          langfuseClient,
-          sandbox,
-          useLocalPrompt: false,
-          langfuseTracing: {
-            environment: "langfuse-in-app-agent",
+        redirectAction: {
+          projectId: "project-1",
+          isV4Enabled: false,
+        },
+        langfuseClient,
+        sandbox,
+        useLocalPrompt: false,
+        langfuseTracing: {
+          environment: "langfuse-in-app-agent",
           metadata: { langfuse_project_id: "project-1" },
           user: { id: "user-1" },
           traceId: "0123456789abcdef0123456789abcdef",
@@ -760,25 +763,25 @@ describe("createAgUiStream", () => {
             server: "langfuseDocs",
             execute: expect.any(Function),
           }),
-            langfuseDocs_fetch: expect.objectContaining({
-              server: "langfuseDocs",
-              execute: expect.any(Function),
-            }),
-            read: expect.objectContaining({
-              id: "read",
-            }),
-            write: expect.objectContaining({
-              id: "write",
-            }),
-            edit: expect.objectContaining({
-              id: "edit",
-            }),
-            bash: expect.objectContaining({
-              id: "bash",
-            }),
-            langfuse_proposeRedirect: expect.objectContaining({
-              id: "langfuse_proposeRedirect",
-            }),
+          langfuseDocs_fetch: expect.objectContaining({
+            server: "langfuseDocs",
+            execute: expect.any(Function),
+          }),
+          read: expect.objectContaining({
+            id: "read",
+          }),
+          write: expect.objectContaining({
+            id: "write",
+          }),
+          edit: expect.objectContaining({
+            id: "edit",
+          }),
+          bash: expect.objectContaining({
+            id: "bash",
+          }),
+          langfuse_proposeRedirect: expect.objectContaining({
+            id: "langfuse_proposeRedirect",
+          }),
         }),
         skills: expect.arrayContaining([
           expect.objectContaining({ name: "langfuse-error-analysis" }),

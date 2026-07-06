@@ -1,38 +1,57 @@
 import { EventType } from "@ag-ui/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type * as LambdaMicrovmsModule from "@aws-sdk/client-lambda-microvms";
+import type * as SharedServerModule from "@langfuse/shared/src/server";
 
 import { getSandboxToolCallFiles } from "@/src/ee/features/in-app-agent/server/persistence";
 import {
   createInAppAgentSandbox,
   createLambdaMicrovmSandboxProvider,
-  type SandboxSnapshotStore,
   type SandboxProvider,
 } from "@/src/ee/features/in-app-agent/server/sandbox";
 
-const lambdaSendMock = vi.fn();
+const lambdaMicrovmsSendMock = vi.fn();
+const fetchMock = vi.fn();
 
-vi.mock("@aws-sdk/client-lambda", async () => {
-  const actual = await vi.importActual<typeof import("@aws-sdk/client-lambda")>(
-    "@aws-sdk/client-lambda",
-  );
+vi.mock("@aws-sdk/client-lambda-microvms", async () => {
+  const actual = (await vi.importActual(
+    "@aws-sdk/client-lambda-microvms",
+  )) as typeof LambdaMicrovmsModule;
 
-  class MockLambdaClient {
-    send = lambdaSendMock;
+  class MockLambdaMicrovmsClient {
+    send = lambdaMicrovmsSendMock;
   }
 
   return {
     ...actual,
-    LambdaClient: MockLambdaClient,
+    LambdaMicrovmsClient: MockLambdaMicrovmsClient,
+  };
+});
+
+vi.mock("@langfuse/shared/src/server", async () => {
+  const actual = (await vi.importActual(
+    "@langfuse/shared/src/server",
+  )) as typeof SharedServerModule;
+
+  return {
+    ...actual,
+    getInAppAgentSandboxSnapshotKey: (
+      projectId: string,
+      conversationId: string,
+    ) => `in-app-agent-sandboxes/${projectId}/${conversationId}.snapshot`,
   };
 });
 
 describe("in-app agent sandbox", () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    vi.stubGlobal("fetch", fetchMock);
   });
 
   afterEach(() => {
-    lambdaSendMock.mockReset();
+    lambdaMicrovmsSendMock.mockReset();
+    fetchMock.mockReset();
+    vi.unstubAllGlobals();
     vi.useRealTimers();
   });
 
@@ -86,10 +105,13 @@ describe("in-app agent sandbox", () => {
       },
       scheduleSuspension({ expiresAt }) {
         if (timer) clearTimeout(timer);
-        timer = setTimeout(() => {
-          snapshot = new Map(files.entries());
-          activeSessionId = null;
-        }, Math.max(0, expiresAt.getTime() - Date.now()));
+        timer = setTimeout(
+          () => {
+            snapshot = new Map(files.entries());
+            activeSessionId = null;
+          },
+          Math.max(0, expiresAt.getTime() - Date.now()),
+        );
       },
     };
     let sandboxState: {
@@ -136,18 +158,20 @@ describe("in-app agent sandbox", () => {
     const firstSessionId = sandboxState.providerSessionId;
 
     const secondSandbox = await createSandbox();
-    await expect(
-      secondSandbox.read({ path: "notes.txt" }),
-    ).resolves.toEqual({ path: "notes.txt", content: "hello" });
+    await expect(secondSandbox.read({ path: "notes.txt" })).resolves.toEqual({
+      path: "notes.txt",
+      content: "hello",
+    });
     expect(sandboxState.providerSessionId).toBe(firstSessionId);
 
     await firstSandbox.onTurnEnded();
     await vi.advanceTimersByTimeAsync(1_001);
 
     const restoredSandbox = await createSandbox();
-    await expect(
-      restoredSandbox.read({ path: "notes.txt" }),
-    ).resolves.toEqual({ path: "notes.txt", content: "hello" });
+    await expect(restoredSandbox.read({ path: "notes.txt" })).resolves.toEqual({
+      path: "notes.txt",
+      content: "hello",
+    });
     expect(sandboxState.providerSessionId).not.toBe(firstSessionId);
     expect(sandboxState.sandboxProvider).toBe("test-fake");
     expect(sandboxState.sandboxSnapshotKey).toBe(
@@ -286,55 +310,75 @@ describe("in-app agent sandbox", () => {
     ]);
   });
 
-  it("restores lambda sandbox state after recreating the provider", async () => {
-    const snapshots = new Map<string, Uint8Array>();
-    const snapshotStore: SandboxSnapshotStore = {
-      deleteSnapshot: vi.fn(),
-      getSnapshot: vi.fn(async (key: string) => snapshots.get(key) ?? null),
-      putSnapshot: vi.fn(async (key: string, snapshot: Uint8Array) => {
-        snapshots.set(key, snapshot);
-      }),
-    };
+  it("reconnects to a running lambda microvm after recreating the provider", async () => {
+    const files = new Map<string, string>();
 
-    lambdaSendMock.mockImplementation(async (command: { input: { Payload?: Uint8Array } }) => {
-      const payloadText = Buffer.from(command.input.Payload ?? []).toString("utf8");
-      const payload = JSON.parse(payloadText) as {
+    lambdaMicrovmsSendMock.mockImplementation(
+      async (command: {
+        constructor: { name: string };
+        input: Record<string, unknown>;
+      }) => {
+        switch (command.constructor.name) {
+          case "RunMicrovmCommand":
+            return {
+              microvmId: "microvm-1",
+              endpoint: "sandbox.example.internal",
+              state: "RUNNING",
+            };
+          case "GetMicrovmCommand":
+            return {
+              microvmId: command.input.microvmIdentifier,
+              endpoint: "sandbox.example.internal",
+              state: "RUNNING",
+            };
+          case "CreateMicrovmAuthTokenCommand":
+            return {
+              authToken: {
+                "X-aws-proxy-auth": "proxy-token",
+              },
+            };
+          default:
+            throw new Error(`Unexpected command: ${command.constructor.name}`);
+        }
+      },
+    );
+
+    fetchMock.mockImplementation(async (input: string, init?: RequestInit) => {
+      if (input === "https://sandbox.example.internal/health") {
+        return new Response(null, { status: 200 });
+      }
+
+      if (input !== "https://sandbox.example.internal/sandbox") {
+        throw new Error(`Unexpected fetch URL: ${input}`);
+      }
+
+      const payload = JSON.parse(String(init?.body ?? "{}")) as {
         operation: "read" | "write";
         path?: string;
         content?: string;
-        snapshotTarBase64: string | null;
       };
-      const files = payload.snapshotTarBase64
-        ? (JSON.parse(Buffer.from(payload.snapshotTarBase64, "base64").toString("utf8")) as Record<
-            string,
-            string
-          >)
-        : {};
 
       if (payload.operation === "write" && payload.path) {
-        files[payload.path] = payload.content ?? "";
+        files.set(payload.path, payload.content ?? "");
+        return Response.json({
+          result: {
+            path: payload.path,
+            bytesWritten: Buffer.byteLength(payload.content ?? "", "utf8"),
+          },
+        });
       }
 
-      const result =
-        payload.operation === "read" && payload.path
-          ? { path: payload.path, content: files[payload.path] ?? null }
-          : { path: payload.path, bytesWritten: Buffer.byteLength(payload.content ?? "", "utf8") };
-
-      return {
-        Payload: Buffer.from(
-          JSON.stringify({
-            result,
-            snapshotTarBase64: Buffer.from(JSON.stringify(files), "utf8").toString(
-              "base64",
-            ),
-          }),
-        ),
-      };
+      return Response.json({
+        result: {
+          path: payload.path,
+          content: payload.path ? (files.get(payload.path) ?? null) : null,
+        },
+      });
     });
 
     let provider = createLambdaMicrovmSandboxProvider({
-      functionName: "sandbox-fn",
-      snapshotStore,
+      imageIdentifier:
+        "arn:aws:lambda:us-east-1:123456789012:microvm-image:sandbox",
     });
 
     const firstSession = await provider.ensureSession({
@@ -348,8 +392,8 @@ describe("in-app agent sandbox", () => {
     });
 
     provider = createLambdaMicrovmSandboxProvider({
-      functionName: "sandbox-fn",
-      snapshotStore,
+      imageIdentifier:
+        "arn:aws:lambda:us-east-1:123456789012:microvm-image:sandbox",
     });
 
     const restoredSession = await provider.ensureSession({
@@ -358,9 +402,12 @@ describe("in-app agent sandbox", () => {
     });
 
     await expect(
-      provider.read({ sessionId: restoredSession.sessionId, path: "notes.txt" }),
+      provider.read({
+        sessionId: restoredSession.sessionId,
+        path: "notes.txt",
+      }),
     ).resolves.toEqual({ path: "notes.txt", content: "hello" });
     expect(restoredSession.sessionId).toBe(firstSession.sessionId);
-    expect(snapshotStore.putSnapshot).toHaveBeenCalled();
+    expect(lambdaMicrovmsSendMock).toHaveBeenCalled();
   });
 });

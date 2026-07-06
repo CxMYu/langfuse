@@ -3,8 +3,6 @@ export type SandboxFile = {
   content: string;
 };
 
-// ponytail: keep the provider boundary tiny so the agent code does not learn
-// Lambda or Docker details. If the sandbox grows, keep new behavior portable.
 export type SandboxProvider = {
   name: string;
   ensureSession(params: {
@@ -37,6 +35,7 @@ export type SandboxProvider = {
     snapshotKey: string;
     expiresAt: Date;
   }): Promise<void> | void;
+  terminateSession?(params: { sessionId: string }): Promise<void> | void;
 };
 
 export type InAppAgentSandbox = {

@@ -45,12 +45,11 @@ import {
 } from "@/src/ee/features/in-app-agent/server/persistence";
 import {
   createDockerSandboxProvider,
-  createDisabledSandboxProvider,
   createInAppAgentSandbox,
   createLambdaMicrovmSandboxProvider,
 } from "@/src/ee/features/in-app-agent/server/sandbox";
 import {
-  getDefaultInAppAgentSandboxProviderName,
+  getDefaultInAppAgentSandboxProviderType,
   getInAppAgentSandboxSnapshotStore,
 } from "@/src/ee/features/in-app-agent/server/sandbox/config";
 import { getLangfuseClient } from "@/src/features/natural-language-filters/server/utils";
@@ -282,35 +281,38 @@ export default async function handler(request: Request) {
     const resumeApprovalRequest = isResumeAgentInput(sanitizedInput)
       ? sanitizedInput.forwardedProps.command.resume.approvalRequest
       : undefined;
-    const sandbox = await createInAppAgentSandbox({
-      conversationId: conversation.id,
-      projectId,
-      providerSessionId: conversation.providerSessionId,
-      sandboxExpiresAt: conversation.sandboxExpiresAt,
-      sandboxProvider: conversation.sandboxProvider,
-      sandboxSnapshotKey: conversation.sandboxSnapshotKey,
-      ttlMs: IN_APP_AGENT_SANDBOX_TTL_MS,
-      provider: getInAppAgentSandboxProvider(),
-      getToolCallFiles: async () =>
-        getSandboxToolCallFiles(
-          await getConversationEvents({
-            prisma,
-            projectId,
-            conversationId: conversation.id,
-          }),
-        ),
-      saveState: async (state) => {
-        await prisma.inAppAgentConversation.update({
-          where: {
-            id_projectId: {
-              id: conversation.id,
-              projectId,
-            },
+    const sandboxProvider = getInAppAgentSandboxProvider();
+    const sandbox = sandboxProvider
+      ? await createInAppAgentSandbox({
+          conversationId: conversation.id,
+          projectId,
+          providerSessionId: conversation.providerSessionId,
+          sandboxExpiresAt: conversation.sandboxExpiresAt,
+          sandboxProvider: conversation.sandboxProvider,
+          sandboxSnapshotKey: conversation.sandboxSnapshotKey,
+          ttlMs: IN_APP_AGENT_SANDBOX_TTL_MS,
+          provider: sandboxProvider,
+          getToolCallFiles: async () =>
+            getSandboxToolCallFiles(
+              await getConversationEvents({
+                prisma,
+                projectId,
+                conversationId: conversation.id,
+              }),
+            ),
+          saveState: async (state) => {
+            await prisma.inAppAgentConversation.update({
+              where: {
+                id_projectId: {
+                  id: conversation.id,
+                  projectId,
+                },
+              },
+              data: state,
+            });
           },
-          data: state,
-        });
-      },
-    });
+        })
+      : undefined;
 
     return await withInAppAgentMcpApiKeyCleanup(
       {
@@ -593,35 +595,45 @@ export default async function handler(request: Request) {
 
 function getInAppAgentSandboxProvider() {
   if (env.NODE_ENV === "test") {
-    return createDisabledSandboxProvider("test-disabled");
+    return undefined;
   }
 
-  const providerName = getDefaultInAppAgentSandboxProviderName();
+  const providerType = getDefaultInAppAgentSandboxProviderType();
 
-  if (providerName === "dangerous-docker") {
+  if (providerType === "dangerous-docker") {
+    logger.warn(
+      "Using dangerous-docker in-app agent sandbox provider. This is for local development only.",
+    );
+    logger.warn(
+      "The dangerous-docker sandbox provider executes commands in a local Docker container and should not be enabled in production.",
+    );
     sharedDockerSandboxProvider ??= createDockerSandboxProvider({
       image: env.LANGFUSE_IN_APP_AGENT_SANDBOX_DOCKER_IMAGE,
-      snapshotStore: getInAppAgentSandboxSnapshotStore(providerName),
+      snapshotStore: getInAppAgentSandboxSnapshotStore(providerType),
     });
     return sharedDockerSandboxProvider;
   }
 
-  if (providerName === "lambda-microvm") {
-    if (!env.LANGFUSE_IN_APP_AGENT_SANDBOX_SNAPSHOT_BUCKET) {
+  if (providerType === "lambda-microvm") {
+    if (
+      !env.LANGFUSE_IN_APP_AGENT_SANDBOX_AWS_LAMBDA_MICROVM_IMAGE_IDENTIFIER
+    ) {
       throw new Error(
-        "LANGFUSE_IN_APP_AGENT_SANDBOX_SNAPSHOT_BUCKET is required for lambda-microvm sandboxes.",
+        "LANGFUSE_IN_APP_AGENT_SANDBOX_AWS_LAMBDA_MICROVM_IMAGE_IDENTIFIER is required for lambda-microvm sandboxes.",
       );
     }
 
-      sharedLambdaSandboxProvider ??= createLambdaMicrovmSandboxProvider({
-        endpoint: env.LANGFUSE_IN_APP_AGENT_SANDBOX_AWS_LAMBDA_ENDPOINT,
-        functionName: env.LANGFUSE_IN_APP_AGENT_SANDBOX_AWS_LAMBDA_FUNCTION_NAME,
-        snapshotStore: getInAppAgentSandboxSnapshotStore(providerName),
-      });
+    sharedLambdaSandboxProvider ??= createLambdaMicrovmSandboxProvider({
+      endpoint: env.LANGFUSE_IN_APP_AGENT_SANDBOX_AWS_LAMBDA_MICROVM_ENDPOINT,
+      imageIdentifier:
+        env.LANGFUSE_IN_APP_AGENT_SANDBOX_AWS_LAMBDA_MICROVM_IMAGE_IDENTIFIER,
+      executionRoleArn:
+        env.LANGFUSE_IN_APP_AGENT_SANDBOX_AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN,
+    });
     return sharedLambdaSandboxProvider;
   }
 
-  return createDisabledSandboxProvider(providerName);
+  assertUnreachable(providerType);
 }
 
 type SessionUser = NonNullable<Session["user"]>;

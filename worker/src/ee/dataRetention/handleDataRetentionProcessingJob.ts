@@ -33,15 +33,10 @@ export const handleDataRetentionProcessingJob = async (job: Job) => {
   });
 
   const currentRetention = project?.retentionDays ?? null;
-  const cutoffDate =
-    currentRetention && currentRetention > 0
-      ? new Date(Date.now() - currentRetention * 24 * 60 * 60 * 1000)
-      : undefined;
 
   await clearExpiredInAppAgentProjectSandboxes({
     prisma,
     projectId,
-    ...(cutoffDate ? { cutoffDate } : {}),
     deleteSnapshot: deleteInAppAgentSandboxSnapshot,
   });
 
@@ -52,6 +47,10 @@ export const handleDataRetentionProcessingJob = async (job: Job) => {
     );
     return;
   }
+
+  const cutoffDate = new Date(
+    Date.now() - currentRetention * 24 * 60 * 60 * 1000,
+  );
 
   // Use the CURRENT retention value from database, not the queued value
 

@@ -1,17 +1,111 @@
-import type { PrismaClient } from "../db";
+type SandboxConversationRecord = {
+  id: string;
+  projectId: string;
+  providerSessionId: string | null;
+  sandboxSnapshotKey: string | null;
+  sandboxExpiresAt?: Date | null;
+  sandboxProvider: string | null;
+};
 
-type SandboxConversationPrisma = Pick<PrismaClient, "inAppAgentConversation">;
+type SandboxConversationPrisma = {
+  inAppAgentConversation: {
+    findUnique: (params: {
+      where: {
+        id_projectId: {
+          id: string;
+          projectId: string;
+        };
+      };
+      select: {
+        id: true;
+        projectId: true;
+        providerSessionId: true;
+        sandboxSnapshotKey: true;
+        sandboxExpiresAt: true;
+        sandboxProvider: true;
+      };
+    }) => Promise<SandboxConversationRecord | null>;
+    findMany: (params: {
+      where: ReturnType<typeof getSandboxCleanupWhere>;
+      select: {
+        id: true;
+        projectId: true;
+        providerSessionId: true;
+        sandboxSnapshotKey: true;
+        sandboxProvider: true;
+      };
+    }) => Promise<Array<Omit<SandboxConversationRecord, "sandboxExpiresAt">>>;
+    update: (params: {
+      where: {
+        id_projectId: {
+          id: string;
+          projectId: string;
+        };
+      };
+      data: typeof clearedSandboxState;
+    }) => Promise<unknown>;
+    updateMany: (params: {
+      where: {
+        projectId: string;
+        id: { in: string[] };
+      };
+      data: typeof clearedSandboxState;
+    }) => Promise<unknown>;
+  };
+};
+
+type InAppAgentSandboxProviderType = "dangerous-docker" | "lambda-microvm";
 
 type DeleteSandboxSnapshot = (params: {
-  providerName?: string | null;
+  providerType: InAppAgentSandboxProviderType;
   snapshotKey: string;
+  sessionId?: string | null;
 }) => Promise<void>;
+
+const sandboxStatePresenceFilter = {
+  OR: [
+    { providerSessionId: { not: null } },
+    { sandboxSnapshotKey: { not: null } },
+    { sandboxExpiresAt: { not: null } },
+    { sandboxProvider: { not: null } },
+  ],
+};
+
+const clearedSandboxState = {
+  providerSessionId: null,
+  sandboxSnapshotKey: null,
+  sandboxExpiresAt: null,
+  sandboxProvider: null,
+};
 
 export function getInAppAgentSandboxSnapshotKey(
   projectId: string,
   conversationId: string,
 ) {
   return `in-app-agent-sandboxes/${projectId}/${conversationId}.snapshot`;
+}
+
+export function getSandboxCleanupWhere(params: {
+  now: Date;
+  projectId?: string;
+  cutoffDate?: Date;
+}) {
+  return {
+    ...(params.projectId ? { projectId: params.projectId } : {}),
+    AND: [
+      sandboxStatePresenceFilter,
+      {
+        OR: [
+          { createdByUserId: null },
+          { deletedAt: { not: null } },
+          { sandboxExpiresAt: { lt: params.now } },
+          ...(params.cutoffDate
+            ? [{ updatedAt: { lt: params.cutoffDate } }]
+            : []),
+        ],
+      },
+    ],
+  };
 }
 
 export async function clearInAppAgentConversationSandbox(params: {
@@ -48,10 +142,16 @@ export async function clearInAppAgentConversationSandbox(params: {
     conversation.sandboxProvider
   ) {
     await params.deleteSnapshot({
-      providerName: conversation.sandboxProvider,
+      providerType: toInAppAgentSandboxProviderType(
+        conversation.sandboxProvider,
+      ),
+      sessionId: conversation.providerSessionId,
       snapshotKey:
         conversation.sandboxSnapshotKey ??
-        getInAppAgentSandboxSnapshotKey(conversation.projectId, conversation.id),
+        getInAppAgentSandboxSnapshotKey(
+          conversation.projectId,
+          conversation.id,
+        ),
     });
   }
 
@@ -62,12 +162,7 @@ export async function clearInAppAgentConversationSandbox(params: {
         projectId: params.projectId,
       },
     },
-    data: {
-      providerSessionId: null,
-      sandboxSnapshotKey: null,
-      sandboxExpiresAt: null,
-      sandboxProvider: null,
-    },
+    data: clearedSandboxState,
   });
 }
 
@@ -75,32 +170,20 @@ export async function clearExpiredInAppAgentProjectSandboxes(params: {
   prisma: SandboxConversationPrisma;
   projectId: string;
   cutoffDate?: Date;
+  now?: Date;
   deleteSnapshot: DeleteSandboxSnapshot;
 }) {
+  const now = params.now ?? new Date();
   const conversations = await params.prisma.inAppAgentConversation.findMany({
-    where: {
+    where: getSandboxCleanupWhere({
+      now,
       projectId: params.projectId,
-      AND: [
-        {
-          OR: [
-            { providerSessionId: { not: null } },
-            { sandboxSnapshotKey: { not: null } },
-            { sandboxExpiresAt: { not: null } },
-            { sandboxProvider: { not: null } },
-          ],
-        },
-        {
-          OR: [
-            { createdByUserId: null },
-            { deletedAt: { not: null } },
-            ...(params.cutoffDate ? [{ updatedAt: { lt: params.cutoffDate } }] : []),
-          ],
-        },
-      ],
-    },
+      cutoffDate: params.cutoffDate,
+    }),
     select: {
       id: true,
       projectId: true,
+      providerSessionId: true,
       sandboxSnapshotKey: true,
       sandboxProvider: true,
     },
@@ -113,10 +196,16 @@ export async function clearExpiredInAppAgentProjectSandboxes(params: {
   await Promise.all(
     conversations.map((conversation) =>
       params.deleteSnapshot({
-        providerName: conversation.sandboxProvider,
+        providerType: toInAppAgentSandboxProviderType(
+          conversation.sandboxProvider,
+        ),
+        sessionId: conversation.providerSessionId,
         snapshotKey:
           conversation.sandboxSnapshotKey ??
-          getInAppAgentSandboxSnapshotKey(conversation.projectId, conversation.id),
+          getInAppAgentSandboxSnapshotKey(
+            conversation.projectId,
+            conversation.id,
+          ),
       }),
     ),
   );
@@ -126,13 +215,21 @@ export async function clearExpiredInAppAgentProjectSandboxes(params: {
       projectId: params.projectId,
       id: { in: conversations.map((conversation) => conversation.id) },
     },
-    data: {
-      providerSessionId: null,
-      sandboxSnapshotKey: null,
-      sandboxExpiresAt: null,
-      sandboxProvider: null,
-    },
+    data: clearedSandboxState,
   });
 
   return conversations.length;
+}
+
+function toInAppAgentSandboxProviderType(
+  providerType: string | null | undefined,
+): InAppAgentSandboxProviderType {
+  if (
+    providerType === "dangerous-docker" ||
+    providerType === "lambda-microvm"
+  ) {
+    return providerType;
+  }
+
+  throw new Error("Missing in-app agent sandbox provider type");
 }

@@ -19,7 +19,8 @@ export type SandboxSnapshotStore = {
 export function createLocalSandboxSnapshotStore(params?: {
   baseDir?: string;
 }): SandboxSnapshotStore {
-  const baseDir = params?.baseDir ?? path.join(os.tmpdir(), "langfuse-sandboxes");
+  const baseDir =
+    params?.baseDir ?? path.join(os.tmpdir(), "langfuse-sandboxes");
 
   const getPath = (key: string) => path.join(baseDir, key);
 

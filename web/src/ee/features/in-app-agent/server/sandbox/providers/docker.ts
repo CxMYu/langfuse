@@ -1,10 +1,10 @@
 import { PassThrough } from "node:stream";
 
 import Docker from "dockerode";
-import tar from "tar-stream";
 
+import type { SandboxFile } from "../types";
 import type { SandboxSnapshotStore } from "../snapshotStore";
-import type { SandboxFile, SandboxProvider } from "../types";
+import type { SandboxProvider } from "../types";
 
 type DockerExecResult = {
   exitCode: number;
@@ -12,25 +12,33 @@ type DockerExecResult = {
   stdout: string;
 };
 
+type DockerSandboxSession = {
+  toolCallFiles: ReadonlyArray<SandboxFile>;
+};
+
+const DOCKER_SANDBOX_SERVER_PORT = 5000;
+
 export function createDockerSandboxProvider(params: {
   image: string;
   snapshotStore: SandboxSnapshotStore;
 }): SandboxProvider {
   const docker = new Docker();
-  const containers = new Map<string, true>();
+  const sessions = new Map<string, DockerSandboxSession>();
   const timers = new Map<string, ReturnType<typeof setTimeout>>();
 
   const ensureContainer = async (containerId: string) => {
     const container = docker.getContainer(containerId);
     await container.inspect();
-    containers.set(containerId, true);
+    sessions.set(
+      containerId,
+      sessions.get(containerId) ?? { toolCallFiles: [] },
+    );
     return container;
   };
 
   const createContainer = async (snapshotKey: string) => {
     const container = await docker.createContainer({
       Image: params.image,
-      Cmd: ["sh", "-lc", "mkdir -p /workspace && tail -f /dev/null"],
       WorkingDir: "/workspace",
       AttachStdout: true,
       AttachStderr: true,
@@ -44,7 +52,8 @@ export function createDockerSandboxProvider(params: {
       await container.putArchive(Buffer.from(snapshot), { path: "/" });
     }
 
-    containers.set(container.id, true);
+    sessions.set(container.id, { toolCallFiles: [] });
+    await waitForSandboxServer(container);
     return container;
   };
 
@@ -60,9 +69,10 @@ export function createDockerSandboxProvider(params: {
 
         try {
           await ensureContainer(sessionId);
+          await waitForSandboxServer(docker.getContainer(sessionId));
           return { sessionId };
         } catch {
-          containers.delete(sessionId);
+          sessions.delete(sessionId);
         }
       }
 
@@ -70,95 +80,43 @@ export function createDockerSandboxProvider(params: {
       return { sessionId: container.id };
     },
     async syncReadonlyFiles({ sessionId, files }) {
-      const container = await ensureContainer(sessionId);
-      await execInContainer(container, [
-        "node",
-        "-e",
-        `
-          const fs = require("node:fs");
-          fs.rmSync("/workspace/tool_calls", { recursive: true, force: true });
-        `,
-      ]);
-      const archive = await buildToolCallsArchive(files);
-      await container.putArchive(archive, { path: "/workspace" });
-      await execInContainer(container, [
-        "node",
-        "-e",
-        `
-          const fs = require("node:fs");
-          const path = require("node:path");
-          const root = "/workspace/tool_calls";
-          const walk = (dir) => {
-            for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-              const entryPath = path.join(dir, entry.name);
-              if (entry.isDirectory()) walk(entryPath);
-              else fs.chmodSync(entryPath, 0o444);
-            }
-          };
-          if (fs.existsSync(root)) walk(root);
-        `,
-      ]);
+      getSession(sessions, sessionId).toolCallFiles = files;
     },
     async read({ sessionId, path }) {
       const container = await ensureContainer(sessionId);
-      const result = await execJsonInContainer(container, [
-        "node",
-        "-e",
-        `
-          const fs = require("node:fs");
-          const filePath = process.argv[1];
-          const content = fs.existsSync(filePath)
-            ? fs.readFileSync(filePath, "utf8")
-            : null;
-          process.stdout.write(JSON.stringify({ path: filePath, content }));
-        `,
+      return await callSandboxServer(container, {
+        operation: "read",
         path,
-      ]);
-
-      return result;
+        toolCallFiles: getSession(sessions, sessionId).toolCallFiles,
+      });
     },
     async write({ sessionId, path, content }) {
       const container = await ensureContainer(sessionId);
-      return await execJsonInContainer(container, [
-        "node",
-        "-e",
-        `
-          const fs = require("node:fs");
-          const pathLib = require("node:path");
-          const filePath = process.argv[1];
-          const content = process.argv[2];
-          fs.mkdirSync(pathLib.dirname(filePath), { recursive: true });
-          fs.writeFileSync(filePath, content, "utf8");
-          process.stdout.write(JSON.stringify({ path: filePath, bytesWritten: Buffer.byteLength(content, "utf8") }));
-        `,
+      return await callSandboxServer(container, {
+        operation: "write",
         path,
         content,
-      ]);
+        toolCallFiles: getSession(sessions, sessionId).toolCallFiles,
+      });
     },
     async edit({ sessionId, path, oldText, newText }) {
       const container = await ensureContainer(sessionId);
-      return await execJsonInContainer(container, [
-        "node",
-        "-e",
-        `
-          const fs = require("node:fs");
-          const filePath = process.argv[1];
-          const oldText = process.argv[2];
-          const newText = process.argv[3];
-          const current = fs.existsSync(filePath) ? fs.readFileSync(filePath, "utf8") : "";
-          const replaced = current.includes(oldText);
-          if (replaced) fs.writeFileSync(filePath, current.replace(oldText, newText), "utf8");
-          process.stdout.write(JSON.stringify({ path: filePath, replaced }));
-        `,
+      return await callSandboxServer(container, {
+        operation: "edit",
         path,
         oldText,
         newText,
-      ]);
+        toolCallFiles: getSession(sessions, sessionId).toolCallFiles,
+      });
     },
     async bash({ sessionId, command, timeoutMs }) {
       const container = await ensureContainer(sessionId);
-      const result = await execInContainer(container, ["sh", "-lc", command], timeoutMs);
-      return result;
+      return await callSandboxServer(container, {
+        operation: "bash",
+        command,
+        ...(timeoutMs ? { timeoutMs } : {}),
+        toolCallFiles: getSession(sessions, sessionId).toolCallFiles,
+      });
     },
     async scheduleSuspension({ sessionId, snapshotKey, expiresAt }) {
       const existingTimer = timers.get(sessionId);
@@ -175,27 +133,123 @@ export function createDockerSandboxProvider(params: {
             snapshotKey,
             await readStreamToUint8Array(archive),
           );
-          await container.remove({ force: true, v: true }).catch(() => undefined);
+          await container
+            .remove({ force: true, v: true })
+            .catch(() => undefined);
         } finally {
-          containers.delete(sessionId);
+          sessions.delete(sessionId);
           timers.delete(sessionId);
         }
       }, delayMs);
       timers.set(sessionId, timer);
     },
+    async terminateSession({ sessionId }) {
+      const existingTimer = timers.get(sessionId);
+      if (existingTimer) {
+        clearTimeout(existingTimer);
+        timers.delete(sessionId);
+      }
+
+      sessions.delete(sessionId);
+
+      await docker
+        .getContainer(sessionId)
+        .remove({ force: true, v: true })
+        .catch(() => undefined);
+    },
   };
 }
 
-async function buildToolCallsArchive(files: ReadonlyArray<SandboxFile>) {
-  const pack = tar.pack();
-  pack.entry({ name: "tool_calls/", type: "directory", mode: 0o755 });
+async function waitForSandboxServer(container: Docker.Container) {
+  const startedAt = Date.now();
+  let lastError: unknown;
 
-  for (const file of files) {
-    pack.entry({ name: file.path, mode: 0o444 }, file.content);
+  while (Date.now() - startedAt < 30_000) {
+    try {
+      const result = await execJsonInContainer(container, [
+        "node",
+        "-e",
+        `
+          (async () => {
+            const response = await fetch("http://127.0.0.1:${DOCKER_SANDBOX_SERVER_PORT}/health");
+            if (!response.ok) {
+              process.stderr.write(await response.text());
+              process.exit(1);
+            }
+            process.stdout.write(await response.text());
+          })().catch((error) => {
+            process.stderr.write(error instanceof Error ? error.message : String(error));
+            process.exit(1);
+          });
+        `,
+      ]);
+
+      if (
+        result &&
+        typeof result === "object" &&
+        "status" in result &&
+        result.status === "ok"
+      ) {
+        return;
+      }
+    } catch (error) {
+      lastError = error;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 500));
   }
 
-  pack.finalize();
-  return Buffer.from(await readStreamToUint8Array(pack));
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("Sandbox server did not become ready");
+}
+
+async function callSandboxServer(
+  container: Docker.Container,
+  payload: Record<string, unknown>,
+) {
+  const result = await execJsonInContainer(container, [
+    "node",
+    "-e",
+    `
+      (async () => {
+        const payload = JSON.parse(process.argv[1]);
+        const response = await fetch("http://127.0.0.1:${DOCKER_SANDBOX_SERVER_PORT}/sandbox", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const text = await response.text();
+        if (!response.ok) {
+          process.stderr.write(text);
+          process.exit(1);
+        }
+        process.stdout.write(text);
+      })().catch((error) => {
+        process.stderr.write(error instanceof Error ? error.message : String(error));
+        process.exit(1);
+      });
+    `,
+    JSON.stringify(payload),
+  ]);
+
+  if (result && typeof result === "object" && "result" in result) {
+    return result.result;
+  }
+
+  return result;
+}
+
+function getSession(
+  sessions: Map<string, DockerSandboxSession>,
+  sessionId: string,
+) {
+  const session = sessions.get(sessionId);
+  if (!session) {
+    throw new Error(`Missing sandbox session: ${sessionId}`);
+  }
+
+  return session;
 }
 
 async function execJsonInContainer(
@@ -205,7 +259,9 @@ async function execJsonInContainer(
 ) {
   const result = await execInContainer(container, cmd, timeoutMs);
   if (result.exitCode !== 0) {
-    throw new Error(result.stderr || result.stdout || "Container command failed");
+    throw new Error(
+      result.stderr || result.stdout || "Container command failed",
+    );
   }
   return JSON.parse(result.stdout || "null") as unknown;
 }
@@ -228,7 +284,13 @@ async function execInContainer(
   container.modem.demuxStream(stream, stdout, stderr);
 
   const timeoutId = timeoutMs
-    ? setTimeout(() => stream.destroy(new Error(`Sandbox command timed out after ${timeoutMs}ms`)), timeoutMs)
+    ? setTimeout(
+        () =>
+          stream.destroy(
+            new Error(`Sandbox command timed out after ${timeoutMs}ms`),
+          ),
+        timeoutMs,
+      )
     : undefined;
 
   try {

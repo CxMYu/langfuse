@@ -143,21 +143,21 @@ export const inAppAgentRouter = createTRPCRouter({
     .mutation(async ({ ctx, input }) => {
       await assertInAppAgentAvailable({ ctx, projectId: input.projectId });
 
-        await getOwnedConversationOrThrow({
-          prisma: ctx.prisma,
-          projectId: input.projectId,
-          conversationId: input.conversationId,
-          userId: ctx.session.user.id,
-        });
+      await getOwnedConversationOrThrow({
+        prisma: ctx.prisma,
+        projectId: input.projectId,
+        conversationId: input.conversationId,
+        userId: ctx.session.user.id,
+      });
 
-        await clearInAppAgentConversationSandbox({
-          prisma: ctx.prisma,
-          projectId: input.projectId,
-          conversationId: input.conversationId,
-          deleteSnapshot: deleteInAppAgentSandboxSnapshot,
-        });
+      await clearInAppAgentConversationSandbox({
+        prisma: ctx.prisma,
+        projectId: input.projectId,
+        conversationId: input.conversationId,
+        deleteSnapshot: deleteInAppAgentSandboxSnapshot,
+      });
 
-        await ctx.prisma.inAppAgentConversation.update({
+      await ctx.prisma.inAppAgentConversation.update({
         where: {
           id_projectId: {
             id: input.conversationId,

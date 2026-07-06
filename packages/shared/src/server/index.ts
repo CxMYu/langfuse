@@ -153,6 +153,7 @@ export * from "./otel";
 export * from "./datasets/executeWithDatasetServiceStrategy";
 
 export * from "./data-deletion/ingestionFileDeletion";
+export * from "./inAppAgentSandboxSnapshots";
 export * from "./media-deletion";
 export * from "./s3";
 
@@ -166,7 +167,6 @@ export * from "./utils/formatAuthProvider";
 export * from "./traceDeletionProcessor";
 export * from "./deletionGuard";
 export * from "./analytics-integrations/types";
-export * from "./inAppAgentSandboxSnapshots";
 
 // Re-annotate these deprecated routing wrappers at the public server barrel.
 // They are otherwise exposed through multiple `export *` hops, where consumers

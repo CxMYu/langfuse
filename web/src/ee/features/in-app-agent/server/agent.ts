@@ -207,11 +207,11 @@ export async function createAgUiStream(params: {
     finished = true;
     eventQueue
       .then(async () => {
-          const results = await Promise.allSettled([
-            cleanupAdapter?.(),
-            params.options.sandbox?.onTurnEnded(),
-            params.options.onFinish?.(),
-          ]);
+        const results = await Promise.allSettled([
+          cleanupAdapter?.(),
+          params.options.sandbox?.onTurnEnded(),
+          params.options.onFinish?.(),
+        ]);
 
         for (const result of results) {
           if (result.status === "rejected") {
@@ -747,28 +747,28 @@ async function createMastraAdapter(params: {
       });
     }
 
-      // @ag-ui/mastra drives execution via adapter.run(input), not a direct
-      // agent.stream(..., { toolsets }) call. Keep Mastra's per-request MCP
-      // discovery, then prefix tool names for constructor-based tools so the
-      // model sees the same names that later appear in AG-UI tool-call events.
-      const tools = withInAppAgentToolApproval({
-        ...prefixToolsetTools(
-          "langfuse",
-          filterInAppAgentAvailableLangfuseMcpTools({
-            tools: toolsets.langfuse,
-            userAccess: params.options.langfuseMcp.userAccess,
-          }),
-        ),
-        ...prefixToolsetTools("langfuseDocs", toolsets.langfuseDocs),
-        [IN_APP_AGENT_REDIRECT_TOOL_NAME]: createRedirectActionTool({
-          projectId: params.options.redirectAction.projectId,
-          isV4Enabled: params.options.redirectAction.isV4Enabled,
+    // @ag-ui/mastra drives execution via adapter.run(input), not a direct
+    // agent.stream(..., { toolsets }) call. Keep Mastra's per-request MCP
+    // discovery, then prefix tool names for constructor-based tools so the
+    // model sees the same names that later appear in AG-UI tool-call events.
+    const tools = withInAppAgentToolApproval({
+      ...prefixToolsetTools(
+        "langfuse",
+        filterInAppAgentAvailableLangfuseMcpTools({
+          tools: toolsets.langfuse,
+          userAccess: params.options.langfuseMcp.userAccess,
         }),
-        ...(params.options.sandbox
-          ? createSandboxTools(params.options.sandbox)
-          : {}),
-      });
-      params.onToolsAvailable?.(tools);
+      ),
+      ...prefixToolsetTools("langfuseDocs", toolsets.langfuseDocs),
+      [IN_APP_AGENT_REDIRECT_TOOL_NAME]: createRedirectActionTool({
+        projectId: params.options.redirectAction.projectId,
+        isV4Enabled: params.options.redirectAction.isV4Enabled,
+      }),
+      ...(params.options.sandbox
+        ? createSandboxTools(params.options.sandbox)
+        : {}),
+    });
+    params.onToolsAvailable?.(tools);
 
     const agent = new Agent({
       id: "langfuse-in-app-assistant",

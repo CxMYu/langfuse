@@ -284,21 +284,21 @@ export async function getConversationEvents(params: {
   projectId: string;
   conversationId: string;
 }): Promise<PersistedConversationEvent[]> {
-    const events = await params.prisma.inAppAgentEvent.findMany({
+  const events = await params.prisma.inAppAgentEvent.findMany({
     where: {
       projectId: params.projectId,
       conversationId: params.conversationId,
     },
     orderBy: { sequenceNumber: "asc" },
-      select: { event: true, runId: true, createdAt: true },
-    });
+    select: { event: true, runId: true, createdAt: true },
+  });
 
-    return events.map(({ event, runId, createdAt }) => ({
-      event: event as unknown as AgUiEvent,
-      runId,
-      createdAt,
-    }));
-  }
+  return events.map(({ event, runId, createdAt }) => ({
+    event: event as unknown as AgUiEvent,
+    runId,
+    createdAt,
+  }));
+}
 
 export function getSandboxToolCallFiles(
   events: readonly PersistedConversationEvent[],
@@ -318,7 +318,11 @@ export function getSandboxToolCallFiles(
       const toolCallId = getString(event, "toolCallId");
       const toolName = getString(event, "toolCallName");
 
-      if (toolCallId && toolName && !IN_APP_AGENT_SANDBOX_TOOL_NAMES.has(toolName)) {
+      if (
+        toolCallId &&
+        toolName &&
+        !IN_APP_AGENT_SANDBOX_TOOL_NAMES.has(toolName)
+      ) {
         drafts.set(toolCallId, {
           createdAt,
           toolName,

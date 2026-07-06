@@ -28,7 +28,7 @@ export async function createInAppAgentSandbox(params: {
   let persistedSnapshotKey = params.sandboxSnapshotKey ?? null;
   let sessionId =
     params.sandboxProvider === params.provider.name
-      ? params.providerSessionId ?? null
+      ? (params.providerSessionId ?? null)
       : null;
   let sandboxExpiresAt = params.sandboxExpiresAt ?? null;
   let sessionIsKnownActive =
