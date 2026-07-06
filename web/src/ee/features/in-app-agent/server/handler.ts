@@ -282,6 +282,7 @@ export default async function handler(request: Request) {
     const resumeApprovalRequest = isResumeAgentInput(sanitizedInput)
       ? sanitizedInput.forwardedProps.command.resume.approvalRequest
       : undefined;
+    const sandboxProviderType = getDefaultInAppAgentSandboxProviderType();
     const sandboxProvider = getInAppAgentSandboxProvider();
     const sandbox = sandboxProvider
       ? await createInAppAgentSandbox({
@@ -292,6 +293,7 @@ export default async function handler(request: Request) {
           sandboxProvider: conversation.sandboxProvider,
           sandboxSnapshotKey: conversation.sandboxSnapshotKey,
           ttlMs: IN_APP_AGENT_SANDBOX_TTL_MS,
+          providerType: sandboxProviderType,
           provider: sandboxProvider,
           getToolCallFiles: async () =>
             getSandboxToolCallFiles(

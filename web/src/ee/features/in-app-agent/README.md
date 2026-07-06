@@ -23,12 +23,12 @@ Runs are foreground-only. A conversation can have one active run; stale unfinish
 - `server/sandbox/config.ts`: sandbox provider selection and snapshot store wiring.
 - `server/sandbox/service.ts`: conversation-scoped sandbox session reuse, readonly file sync, and turn-end suspension.
 - `server/sandbox/providers/*`: provider adapters for local Docker and Lambda MicroVM sandboxes.
-- `server/sandbox/snapshotStore.ts`: local-disk and S3-compatible snapshot persistence.
-- `server/sandbox/types.ts`: provider contract and the runtime-neutral sandbox interface used by tools/agent.
+- `server/sandbox/snapshots.ts`: local-disk and S3-compatible snapshot persistence.
+- `server/sandbox/types.ts`: runtime-neutral sandbox interface used by tools/agent.
 - `constants.ts`: stable names shared across prompts, tools, persistence, and rendering.
 - `components/*`: client controller and prop-driven render components.
 
-Outside this feature folder, `packages/in-app-agent-sandbox-server/*` provides the shared sandbox runtime used by both the local Docker provider and the Lambda MicroVM image.
+Outside this feature folder, `packages/in-app-agent-sandbox-server/src/*` provides the shared sandbox runtime and contract types used by both the local Docker provider and the Lambda MicroVM image.
 `packages/shared/src/server/inAppAgentSandboxSnapshots.ts` owns shared sandbox snapshot keying and cleanup helpers.
 
 ## File Relationships
@@ -87,10 +87,10 @@ Both sandbox providers target the same runtime contract from `packages/in-app-ag
 
 Provider contract:
 
-- `ensureSession({ sessionId?, snapshotKey })`
+- `ensureSession({ conversationId, sessionId?, snapshotKey })`
 - `syncReadonlyFiles({ sessionId, files })`
 - `read`, `write`, `edit`, `bash`
-- optional `scheduleSuspension({ sessionId, snapshotKey, expiresAt })`
+- optional `suspendSession({ sessionId, snapshotKey })`
 
 Runtime HTTP surface:
 

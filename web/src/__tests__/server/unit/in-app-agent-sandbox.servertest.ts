@@ -196,15 +196,9 @@ describe("in-app agent sandbox", () => {
     let snapshot = new Map<string, string>();
     let activeSessionId: string | null = null;
     let sessionCounter = 0;
-    let timer: ReturnType<typeof setTimeout> | null = null;
     const provider: SandboxProvider = {
-      name: "test-fake",
       async ensureSession({ sessionId }) {
         if (sessionId && activeSessionId === sessionId) {
-          if (timer) {
-            clearTimeout(timer);
-            timer = null;
-          }
           return { sessionId };
         }
 
@@ -239,15 +233,13 @@ describe("in-app agent sandbox", () => {
       async bash() {
         return { stdout: "", stderr: "", exitCode: 0 };
       },
-      scheduleSuspension({ expiresAt }) {
-        if (timer) clearTimeout(timer);
-        timer = setTimeout(
-          () => {
-            snapshot = new Map(files.entries());
-            activeSessionId = null;
-          },
-          Math.max(0, expiresAt.getTime() - Date.now()),
-        );
+      async suspendSession({ sessionId }) {
+        if (sessionId !== activeSessionId) {
+          return;
+        }
+
+        snapshot = new Map(files.entries());
+        activeSessionId = null;
       },
     };
     let sandboxState: {
@@ -271,6 +263,7 @@ describe("in-app agent sandbox", () => {
         sandboxProvider: sandboxState.sandboxProvider,
         sandboxSnapshotKey: sandboxState.sandboxSnapshotKey,
         ttlMs: 1_000,
+        providerType: "dangerous-docker",
         provider,
         getToolCallFiles: async () => [],
         saveState: async (nextState) => {
@@ -309,7 +302,7 @@ describe("in-app agent sandbox", () => {
       content: "hello",
     });
     expect(sandboxState.providerSessionId).not.toBe(firstSessionId);
-    expect(sandboxState.sandboxProvider).toBe("test-fake");
+    expect(sandboxState.sandboxProvider).toBe("dangerous-docker");
     expect(sandboxState.sandboxSnapshotKey).toBe(
       "in-app-agent-sandboxes/project-1/conversation-1.snapshot",
     );
@@ -317,7 +310,6 @@ describe("in-app agent sandbox", () => {
 
   it("persists sandbox ttl metadata when a turn ends", async () => {
     const provider: SandboxProvider = {
-      name: "test-fake",
       async ensureSession() {
         return { sessionId: "session-1" };
       },
@@ -343,6 +335,7 @@ describe("in-app agent sandbox", () => {
       conversationId: "conversation-1",
       projectId: "project-1",
       ttlMs: 1_000,
+      providerType: "dangerous-docker",
       provider,
       getToolCallFiles: async () => [],
       saveState: async (state) => {
@@ -356,14 +349,14 @@ describe("in-app agent sandbox", () => {
 
     expect(savedStates[0]).toMatchObject({
       providerSessionId: "session-1",
-      sandboxProvider: "test-fake",
+      sandboxProvider: "dangerous-docker",
       sandboxSnapshotKey:
         "in-app-agent-sandboxes/project-1/conversation-1.snapshot",
       sandboxExpiresAt: null,
     });
     expect(savedStates[1]).toMatchObject({
       providerSessionId: "session-1",
-      sandboxProvider: "test-fake",
+      sandboxProvider: "dangerous-docker",
       sandboxSnapshotKey:
         "in-app-agent-sandboxes/project-1/conversation-1.snapshot",
     });
@@ -463,6 +456,7 @@ describe("in-app agent sandbox", () => {
     });
 
     const session = await provider.ensureSession({
+      conversationId: "conversation-1",
       sessionId: stoppedContainer.id,
       snapshotKey: "snapshots/conversation-1.tar",
     });
@@ -544,6 +538,7 @@ describe("in-app agent sandbox", () => {
     });
 
     const firstSession = await provider.ensureSession({
+      conversationId: "conversation-1",
       sessionId: null,
       snapshotKey: "snapshots/conversation-1.tar",
     });
@@ -559,6 +554,7 @@ describe("in-app agent sandbox", () => {
     });
 
     const restoredSession = await provider.ensureSession({
+      conversationId: "conversation-1",
       sessionId: firstSession.sessionId,
       snapshotKey: "snapshots/conversation-1.tar",
     });

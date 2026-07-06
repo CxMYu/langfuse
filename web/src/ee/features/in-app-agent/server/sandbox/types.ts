@@ -1,10 +1,6 @@
-export type SandboxFile = {
-  path: string;
-  content: string;
-};
+import type { SandboxFile } from "@repo/in-app-agent-sandbox-server";
 
 export type SandboxProvider = {
-  name: string;
   ensureSession(params: {
     conversationId: string;
     sessionId?: string | null;

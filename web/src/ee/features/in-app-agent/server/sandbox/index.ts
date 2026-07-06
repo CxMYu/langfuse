@@ -5,5 +5,6 @@ export { createInAppAgentSandbox } from "./service";
 export {
   createLocalSandboxSnapshotStore,
   createS3SandboxSnapshotStore,
-} from "./snapshotStore";
-export type { InAppAgentSandbox, SandboxFile, SandboxProvider } from "./types";
+} from "./snapshots";
+export type { SandboxFile } from "@repo/in-app-agent-sandbox-server";
+export type { InAppAgentSandbox, SandboxProvider } from "./types";

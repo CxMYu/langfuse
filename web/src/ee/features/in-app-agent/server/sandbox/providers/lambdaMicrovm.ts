@@ -9,9 +9,10 @@ import {
   SuspendMicrovmCommand,
   type RunMicrovmCommandInput,
 } from "@aws-sdk/client-lambda-microvms";
+import type { SandboxFile } from "@repo/in-app-agent-sandbox-server";
 import { z } from "zod";
 
-import type { SandboxFile, SandboxProvider } from "../types";
+import type { SandboxProvider } from "../types";
 
 const DEFAULT_AUTH_TOKEN_EXPIRATION_MINUTES = 30;
 const DEFAULT_BRIDGE_PORT = 5000;
@@ -157,7 +158,6 @@ export function createLambdaMicrovmSandboxProvider(params: {
   };
 
   return {
-    name: "lambda-microvm",
     async ensureSession({ sessionId }) {
       const session = await ensureSession(sessionId);
       return { sessionId: session.sessionId };

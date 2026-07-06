@@ -5,10 +5,10 @@
     "module": "NodeNext",
     "lib": ["es2023"],
     "outDir": "./dist",
-    "rootDir": ".",
+    "rootDir": "./src",
     "target": "es2024",
     "types": ["node"]
   },
-  "include": ["server.ts", "toolRunner.ts"],
+  "include": ["src/**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }

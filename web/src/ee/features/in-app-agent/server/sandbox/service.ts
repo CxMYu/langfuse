@@ -1,6 +1,8 @@
+import type { SandboxFile } from "@repo/in-app-agent-sandbox-server";
 import { getInAppAgentSandboxSnapshotKey } from "@langfuse/shared/src/server";
 
-import type { InAppAgentSandbox, SandboxFile, SandboxProvider } from "./types";
+import type { InAppAgentSandboxProviderType } from "./config";
+import type { InAppAgentSandbox, SandboxProvider } from "./types";
 
 export async function createInAppAgentSandbox(params: {
   conversationId: string;
@@ -10,6 +12,7 @@ export async function createInAppAgentSandbox(params: {
   sandboxProvider?: string | null;
   sandboxSnapshotKey?: string | null;
   ttlMs: number;
+  providerType: InAppAgentSandboxProviderType;
   provider: SandboxProvider;
   getToolCallFiles: () => Promise<ReadonlyArray<SandboxFile>>;
   saveState: (state: {
@@ -27,23 +30,23 @@ export async function createInAppAgentSandbox(params: {
   let sandboxProvider = params.sandboxProvider ?? null;
   let persistedSnapshotKey = params.sandboxSnapshotKey ?? null;
   let sessionId =
-    params.sandboxProvider === params.provider.name
+    params.sandboxProvider === params.providerType
       ? (params.providerSessionId ?? null)
       : null;
   let sandboxExpiresAt = params.sandboxExpiresAt ?? null;
   let sessionIsKnownActive =
     sessionId !== null &&
-    params.sandboxProvider === params.provider.name &&
+    params.sandboxProvider === params.providerType &&
     (sandboxExpiresAt === null || sandboxExpiresAt.getTime() > now().getTime());
 
   const persistState = async () => {
     await params.saveState({
       providerSessionId: sessionId,
       sandboxExpiresAt,
-      sandboxProvider: params.provider.name,
+      sandboxProvider: params.providerType,
       sandboxSnapshotKey: snapshotKey,
     });
-    sandboxProvider = params.provider.name;
+    sandboxProvider = params.providerType;
     persistedSnapshotKey = snapshotKey;
   };
 
@@ -51,7 +54,7 @@ export async function createInAppAgentSandbox(params: {
     if (
       sessionId !== null &&
       params.provider.suspendSession &&
-      sandboxProvider === params.provider.name &&
+      sandboxProvider === params.providerType &&
       sandboxExpiresAt !== null &&
       sandboxExpiresAt.getTime() <= now().getTime()
     ) {
@@ -73,7 +76,7 @@ export async function createInAppAgentSandbox(params: {
 
     if (
       session.sessionId !== sessionId ||
-      sandboxProvider !== params.provider.name ||
+      sandboxProvider !== params.providerType ||
       persistedSnapshotKey !== snapshotKey ||
       (!sessionIsKnownActive && sandboxExpiresAt !== null)
     ) {

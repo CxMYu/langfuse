@@ -1,7 +1,14 @@
 import { spawn } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { z } from "zod";
+
+import {
+  SandboxOperationSchema,
+  type BashSandboxOperation,
+  type EditSandboxOperation,
+  type ReadSandboxOperation,
+  type WriteSandboxOperation,
+} from "./contracts.js";
 
 type BashResult = {
   stdout: string;
@@ -10,51 +17,6 @@ type BashResult = {
   startedAt: string;
   completedAt: string;
 };
-
-const SandboxFileSchema = z.object({
-  path: z.string(),
-  content: z.string(),
-});
-
-const ReadOperationSchema = z.object({
-  operation: z.literal("read"),
-  path: z.string(),
-  toolCallFiles: z.array(SandboxFileSchema).optional(),
-});
-
-const WriteOperationSchema = z.object({
-  operation: z.literal("write"),
-  path: z.string(),
-  content: z.string(),
-  toolCallFiles: z.array(SandboxFileSchema).optional(),
-});
-
-const EditOperationSchema = z.object({
-  operation: z.literal("edit"),
-  path: z.string(),
-  oldText: z.string(),
-  newText: z.string(),
-  toolCallFiles: z.array(SandboxFileSchema).optional(),
-});
-
-const BashOperationSchema = z.object({
-  operation: z.literal("bash"),
-  command: z.string(),
-  timeoutMs: z.number().finite().optional(),
-  toolCallFiles: z.array(SandboxFileSchema).optional(),
-});
-
-const SandboxOperationSchema = z.discriminatedUnion("operation", [
-  ReadOperationSchema,
-  WriteOperationSchema,
-  EditOperationSchema,
-  BashOperationSchema,
-]);
-
-type ReadOperation = z.infer<typeof ReadOperationSchema>;
-type WriteOperation = z.infer<typeof WriteOperationSchema>;
-type EditOperation = z.infer<typeof EditOperationSchema>;
-type BashOperation = z.infer<typeof BashOperationSchema>;
 
 const WORKSPACE_ROOT = process.env.WORKSPACE_ROOT ?? "/workspace";
 
@@ -86,7 +48,7 @@ async function main() {
   }
 }
 
-async function readOperation(body: ReadOperation) {
+async function readOperation(body: ReadSandboxOperation) {
   const filePath = resolveSandboxPath(body.path);
 
   try {
@@ -101,7 +63,7 @@ async function readOperation(body: ReadOperation) {
   }
 }
 
-async function writeOperation(body: WriteOperation) {
+async function writeOperation(body: WriteSandboxOperation) {
   const filePath = resolveSandboxPath(body.path);
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(filePath, body.content, "utf8");
@@ -112,7 +74,7 @@ async function writeOperation(body: WriteOperation) {
   };
 }
 
-async function editOperation(body: EditOperation) {
+async function editOperation(body: EditSandboxOperation) {
   const filePath = resolveSandboxPath(body.path);
 
   let current = "";
@@ -136,7 +98,7 @@ async function editOperation(body: EditOperation) {
   return { path: filePath, replaced };
 }
 
-async function bashOperation(body: BashOperation) {
+async function bashOperation(body: BashSandboxOperation) {
   return await runCommand(body.command, body.timeoutMs);
 }
 

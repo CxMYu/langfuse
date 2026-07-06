@@ -1,10 +1,11 @@
 import {
   createLocalSandboxSnapshotStore,
   createS3SandboxSnapshotStore,
-} from "./snapshotStore";
+} from "./snapshots";
 import { createDockerSandboxProvider } from "./providers/docker";
 import { createLambdaMicrovmSandboxProvider } from "./providers/lambdaMicrovm";
 import { env } from "@/src/env.mjs";
+import { assertUnreachable } from "@/src/utils/types";
 
 const LOCAL_SANDBOX_IMAGE = "langfuse-in-app-agent-sandbox:latest";
 
@@ -77,17 +78,23 @@ function getInAppAgentSandboxProvider(
     });
   }
 
-  if (!env.LANGFUSE_IN_APP_AGENT_SANDBOX_AWS_LAMBDA_MICROVM_IMAGE_IDENTIFIER) {
-    throw new Error(
-      "LANGFUSE_IN_APP_AGENT_SANDBOX_AWS_LAMBDA_MICROVM_IMAGE_IDENTIFIER is required for lambda-microvm sandboxes.",
-    );
+  if (providerType === "lambda-microvm") {
+    if (
+      !env.LANGFUSE_IN_APP_AGENT_SANDBOX_AWS_LAMBDA_MICROVM_IMAGE_IDENTIFIER
+    ) {
+      throw new Error(
+        "LANGFUSE_IN_APP_AGENT_SANDBOX_AWS_LAMBDA_MICROVM_IMAGE_IDENTIFIER is required for lambda-microvm sandboxes.",
+      );
+    }
+
+    return createLambdaMicrovmSandboxProvider({
+      endpoint: env.LANGFUSE_IN_APP_AGENT_SANDBOX_AWS_LAMBDA_MICROVM_ENDPOINT,
+      imageIdentifier:
+        env.LANGFUSE_IN_APP_AGENT_SANDBOX_AWS_LAMBDA_MICROVM_IMAGE_IDENTIFIER,
+      executionRoleArn:
+        env.LANGFUSE_IN_APP_AGENT_SANDBOX_AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN,
+    });
   }
 
-  return createLambdaMicrovmSandboxProvider({
-    endpoint: env.LANGFUSE_IN_APP_AGENT_SANDBOX_AWS_LAMBDA_MICROVM_ENDPOINT,
-    imageIdentifier:
-      env.LANGFUSE_IN_APP_AGENT_SANDBOX_AWS_LAMBDA_MICROVM_IMAGE_IDENTIFIER,
-    executionRoleArn:
-      env.LANGFUSE_IN_APP_AGENT_SANDBOX_AWS_LAMBDA_MICROVM_EXECUTION_ROLE_ARN,
-  });
+  assertUnreachable(providerType);
 }

@@ -1,10 +1,10 @@
 import { PassThrough } from "node:stream";
 
 import Docker from "dockerode";
+import type { SandboxFile } from "@repo/in-app-agent-sandbox-server";
 import { logger } from "@langfuse/shared/src/server";
 
-import type { SandboxFile } from "../types";
-import type { SandboxSnapshotStore } from "../snapshotStore";
+import type { SandboxSnapshotStore } from "../snapshots";
 import type { SandboxProvider } from "../types";
 
 type DockerExecResult = {
@@ -135,7 +135,6 @@ export function createDockerSandboxProvider(params: {
   };
 
   return {
-    name: "dangerous-docker",
     async ensureSession({ conversationId, sessionId, snapshotKey }) {
       logger.debug("In-app agent docker sandbox ensureSession", {
         conversationId,

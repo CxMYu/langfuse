@@ -6,54 +6,17 @@ import {
   type ServerResponse,
 } from "node:http";
 import path from "node:path";
-import { z } from "zod";
 
-type SandboxOperation = z.infer<typeof SandboxOperationSchema>;
-
-const SandboxFileSchema = z.object({
-  path: z.string(),
-  content: z.string(),
-});
-
-const ReadOperationSchema = z.object({
-  operation: z.literal("read"),
-  path: z.string(),
-  toolCallFiles: z.array(SandboxFileSchema).optional(),
-});
-
-const WriteOperationSchema = z.object({
-  operation: z.literal("write"),
-  path: z.string(),
-  content: z.string(),
-  toolCallFiles: z.array(SandboxFileSchema).optional(),
-});
-
-const EditOperationSchema = z.object({
-  operation: z.literal("edit"),
-  path: z.string(),
-  oldText: z.string(),
-  newText: z.string(),
-  toolCallFiles: z.array(SandboxFileSchema).optional(),
-});
-
-const BashOperationSchema = z.object({
-  operation: z.literal("bash"),
-  command: z.string(),
-  timeoutMs: z.number().finite().optional(),
-  toolCallFiles: z.array(SandboxFileSchema).optional(),
-});
-
-const SandboxOperationSchema = z.discriminatedUnion("operation", [
-  ReadOperationSchema,
-  WriteOperationSchema,
-  EditOperationSchema,
-  BashOperationSchema,
-]);
-
-type ReadOperation = z.infer<typeof ReadOperationSchema>;
-type WriteOperation = z.infer<typeof WriteOperationSchema>;
-type EditOperation = z.infer<typeof EditOperationSchema>;
-type BashOperation = z.infer<typeof BashOperationSchema>;
+import {
+  SandboxFileSchema,
+  SandboxOperationSchema,
+  type BashSandboxOperation,
+  type EditSandboxOperation,
+  type ReadSandboxOperation,
+  type SandboxFile,
+  type SandboxOperation,
+  type WriteSandboxOperation,
+} from "./contracts.js";
 
 const BRIDGE_PORT = Number(process.env.PORT ?? 5000);
 const WORKSPACE_ROOT = process.env.WORKSPACE_ROOT ?? "/workspace";
@@ -167,7 +130,7 @@ async function syncToolCallFiles(toolCallFiles: unknown, requestId: string) {
     return;
   }
 
-  const files = z.array(SandboxFileSchema).parse(toolCallFiles);
+  const files: SandboxFile[] = SandboxFileSchema.array().parse(toolCallFiles);
   logSandboxServer("toolCalls.sync", {
     requestId,
     fileCount: files.length,
@@ -183,7 +146,7 @@ async function syncToolCallFiles(toolCallFiles: unknown, requestId: string) {
   }
 }
 
-async function readOperation(body: ReadOperation, requestId: string) {
+async function readOperation(body: ReadSandboxOperation, requestId: string) {
   const result = await runToolOperation(body, requestId);
   logSandboxServer("read.complete", {
     requestId,
@@ -193,7 +156,7 @@ async function readOperation(body: ReadOperation, requestId: string) {
   return { result };
 }
 
-async function writeOperation(body: WriteOperation, requestId: string) {
+async function writeOperation(body: WriteSandboxOperation, requestId: string) {
   const result = await runToolOperation(body, requestId);
   logSandboxServer("write.complete", {
     requestId,
@@ -203,7 +166,7 @@ async function writeOperation(body: WriteOperation, requestId: string) {
   return { result };
 }
 
-async function editOperation(body: EditOperation, requestId: string) {
+async function editOperation(body: EditSandboxOperation, requestId: string) {
   const result = await runToolOperation(body, requestId);
   logSandboxServer("edit.complete", {
     requestId,
@@ -213,7 +176,7 @@ async function editOperation(body: EditOperation, requestId: string) {
   return { result };
 }
 
-async function bashOperation(body: BashOperation, requestId: string) {
+async function bashOperation(body: BashSandboxOperation, requestId: string) {
   const result = await runToolOperation(body, requestId);
   logSandboxServer("bash.complete", {
     requestId,

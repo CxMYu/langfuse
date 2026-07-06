@@ -79,7 +79,6 @@ async function createTestSandbox() {
   let suspensionTimer: ReturnType<typeof setTimeout> | null = null;
 
   const provider: SandboxProvider = {
-    name: "test-fake",
     async ensureSession({ sessionId }) {
       if (sessionId && activeSessionId === sessionId) {
         if (suspensionTimer) {
@@ -140,6 +139,7 @@ async function createTestSandbox() {
     sandboxProvider: sandboxState.sandboxProvider,
     sandboxSnapshotKey: sandboxState.sandboxSnapshotKey,
     ttlMs: 1_000,
+    providerType: "dangerous-docker",
     provider,
     getToolCallFiles: async () => [],
     saveState: async (nextState) => {
