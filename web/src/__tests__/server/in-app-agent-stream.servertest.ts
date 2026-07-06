@@ -800,6 +800,10 @@ describe("createAgUiStream", () => {
     expect(agentConfig?.tools?.langfuseDocs_fetch).not.toHaveProperty(
       "requireApproval",
     );
+    expect(agentConfig?.tools?.read?.requireApproval).not.toBe(true);
+    expect(agentConfig?.tools?.write?.requireApproval).not.toBe(true);
+    expect(agentConfig?.tools?.edit?.requireApproval).not.toBe(true);
+    expect(agentConfig?.tools?.bash?.requireApproval).not.toBe(true);
     expect(
       agentConfig?.tools?.[IN_APP_AGENT_REDIRECT_TOOL_NAME]?.requireApproval,
     ).not.toBe(true);

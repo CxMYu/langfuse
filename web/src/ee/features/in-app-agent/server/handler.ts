@@ -85,6 +85,7 @@ import {
 const IN_APP_AGENT_API_KEY_NOTE = "In-app agent MCP session";
 const MAX_IN_APP_AGENT_INPUT_BYTES = 1024 * 1024;
 const IN_APP_AGENT_SANDBOX_TTL_MS = 15 * 60 * 1000;
+const LOCAL_SANDBOX_IMAGE = "langfuse-in-app-agent-sandbox:latest";
 
 let sharedDockerSandboxProvider:
   | ReturnType<typeof createDockerSandboxProvider>
@@ -608,7 +609,7 @@ function getInAppAgentSandboxProvider() {
       "The dangerous-docker sandbox provider executes commands in a local Docker container and should not be enabled in production.",
     );
     sharedDockerSandboxProvider ??= createDockerSandboxProvider({
-      image: env.LANGFUSE_IN_APP_AGENT_SANDBOX_DOCKER_IMAGE,
+      image: LOCAL_SANDBOX_IMAGE,
       snapshotStore: getInAppAgentSandboxSnapshotStore(providerType),
     });
     return sharedDockerSandboxProvider;

@@ -1,6 +1,7 @@
 import { PassThrough } from "node:stream";
 
 import Docker from "dockerode";
+import { logger } from "@langfuse/shared/src/server";
 
 import type { SandboxFile } from "../types";
 import type { SandboxSnapshotStore } from "../snapshotStore";
@@ -12,8 +13,16 @@ type DockerExecResult = {
   stdout: string;
 };
 
+type DockerContainerInspect = Awaited<ReturnType<Docker.Container["inspect"]>>;
+
 type DockerSandboxSession = {
   toolCallFiles: ReadonlyArray<SandboxFile>;
+};
+
+type DockerExecContext = {
+  operation: string;
+  containerId: string;
+  attempt?: number;
 };
 
 const DOCKER_SANDBOX_SERVER_PORT = 5000;
@@ -27,29 +36,74 @@ export function createDockerSandboxProvider(params: {
   const timers = new Map<string, ReturnType<typeof setTimeout>>();
 
   const ensureContainer = async (containerId: string) => {
+    logger.debug("In-app agent docker sandbox inspecting existing container", {
+      containerId,
+    });
     const container = docker.getContainer(containerId);
-    await container.inspect();
+    const inspect = await container.inspect();
+    if (!inspect.State?.Running) {
+      throw new Error(
+        `Sandbox container ${containerId} is not running (${formatContainerState(inspect)}).`,
+      );
+    }
     sessions.set(
       containerId,
       sessions.get(containerId) ?? { toolCallFiles: [] },
     );
+    logger.debug("In-app agent docker sandbox reusing running container", {
+      containerId,
+      state: formatContainerState(inspect),
+    });
     return container;
   };
 
   const createContainer = async (snapshotKey: string) => {
-    const container = await docker.createContainer({
-      Image: params.image,
-      WorkingDir: "/workspace",
-      AttachStdout: true,
-      AttachStderr: true,
-      NetworkDisabled: true,
-      Tty: false,
+    let container: Docker.Container;
+
+    try {
+      logger.debug("In-app agent docker sandbox creating container", {
+        image: params.image,
+        snapshotKey,
+      });
+      container = await docker.createContainer({
+        Image: params.image,
+        WorkingDir: "/workspace",
+        AttachStdout: true,
+        AttachStderr: true,
+        NetworkDisabled: true,
+        Tty: false,
+      });
+    } catch (error) {
+      if (isMissingDockerImageError(error)) {
+        throw new Error(
+          `Missing local sandbox image ${params.image}. Re-run \`bash scripts/codex/setup.sh\` or run \`pnpm turbo run build:image-docker-image --filter @repo/in-app-agent-sandbox-server --force\`.`,
+        );
+      }
+
+      throw error;
+    }
+
+    logger.debug("In-app agent docker sandbox starting container", {
+      containerId: container.id,
     });
     await container.start();
+    logger.debug("In-app agent docker sandbox started container", {
+      containerId: container.id,
+    });
 
     const snapshot = await params.snapshotStore.getSnapshot(snapshotKey);
     if (snapshot) {
+      logger.debug("In-app agent docker sandbox restoring snapshot", {
+        containerId: container.id,
+        snapshotKey,
+        snapshotBytes: snapshot.length,
+      });
       await container.putArchive(Buffer.from(snapshot), { path: "/" });
+    } else {
+      logger.debug("In-app agent docker sandbox has no snapshot to restore", {
+        containerId: container.id,
+        snapshotKey,
+      });
     }
 
     sessions.set(container.id, { toolCallFiles: [] });
@@ -60,6 +114,10 @@ export function createDockerSandboxProvider(params: {
   return {
     name: "dangerous-docker",
     async ensureSession({ sessionId, snapshotKey }) {
+      logger.debug("In-app agent docker sandbox ensureSession", {
+        requestedSessionId: sessionId,
+        snapshotKey,
+      });
       if (sessionId) {
         const timer = timers.get(sessionId);
         if (timer) {
@@ -70,17 +128,33 @@ export function createDockerSandboxProvider(params: {
         try {
           await ensureContainer(sessionId);
           await waitForSandboxServer(docker.getContainer(sessionId));
+          logger.debug("In-app agent docker sandbox reused existing session", {
+            sessionId,
+          });
           return { sessionId };
-        } catch {
+        } catch (error) {
+          logger.debug("In-app agent docker sandbox failed to reuse session", {
+            sessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
           sessions.delete(sessionId);
         }
       }
 
       const container = await createContainer(snapshotKey);
+      logger.debug("In-app agent docker sandbox created new session", {
+        sessionId: container.id,
+        snapshotKey,
+      });
       return { sessionId: container.id };
     },
     async syncReadonlyFiles({ sessionId, files }) {
       getSession(sessions, sessionId).toolCallFiles = files;
+      logger.debug("In-app agent docker sandbox synced readonly files", {
+        sessionId,
+        fileCount: files.length,
+        paths: files.map((file) => file.path),
+      });
     },
     async read({ sessionId, path }) {
       const container = await ensureContainer(sessionId);
@@ -163,9 +237,16 @@ export function createDockerSandboxProvider(params: {
 async function waitForSandboxServer(container: Docker.Container) {
   const startedAt = Date.now();
   let lastError: unknown;
+  let attempt = 0;
 
   while (Date.now() - startedAt < 30_000) {
+    attempt += 1;
     try {
+      logger.debug("In-app agent docker sandbox health probe start", {
+        containerId: container.id,
+        attempt,
+        elapsedMs: Date.now() - startedAt,
+      });
       const result = await execJsonInContainer(container, [
         "node",
         "-e",
@@ -184,34 +265,78 @@ async function waitForSandboxServer(container: Docker.Container) {
         `,
       ]);
 
+      logger.debug("In-app agent docker sandbox health probe result", {
+        containerId: container.id,
+        attempt,
+        result,
+      });
+
       if (
         result &&
         typeof result === "object" &&
         "status" in result &&
         result.status === "ok"
       ) {
+        logger.debug("In-app agent docker sandbox health probe ready", {
+          containerId: container.id,
+          attempt,
+          elapsedMs: Date.now() - startedAt,
+        });
         return;
       }
     } catch (error) {
       lastError = error;
+      logger.debug("In-app agent docker sandbox health probe failed", {
+        containerId: container.id,
+        attempt,
+        elapsedMs: Date.now() - startedAt,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
 
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
 
-  throw lastError instanceof Error
-    ? lastError
-    : new Error("Sandbox server did not become ready");
+  throw await createSandboxServerNotReadyError({ container, lastError });
+}
+
+async function createSandboxServerNotReadyError(params: {
+  container: Docker.Container;
+  lastError: unknown;
+}) {
+  const details = ["Sandbox server did not become ready within 30000ms."];
+
+  if (params.lastError instanceof Error) {
+    details.push(`Last health probe error: ${params.lastError.message}`);
+  }
+
+  const inspect = await params.container.inspect().catch(() => null);
+  if (inspect) {
+    details.push(`Container state: ${formatContainerState(inspect)}`);
+  }
+
+  const logs = await readContainerLogs(params.container).catch(() => null);
+  if (logs) {
+    details.push(`Container logs: ${logs}`);
+  }
+
+  return new Error(details.join(" "));
 }
 
 async function callSandboxServer(
   container: Docker.Container,
   payload: Record<string, unknown>,
 ) {
-  const result = await execJsonInContainer(container, [
-    "node",
-    "-e",
-    `
+  logger.debug("In-app agent docker sandbox tool call start", {
+    containerId: container.id,
+    payload: summarizePayload(payload),
+  });
+  const result = await execJsonInContainer(
+    container,
+    [
+      "node",
+      "-e",
+      `
       (async () => {
         const payload = JSON.parse(process.argv[1]);
         const response = await fetch("http://127.0.0.1:${DOCKER_SANDBOX_SERVER_PORT}/sandbox", {
@@ -230,8 +355,20 @@ async function callSandboxServer(
         process.exit(1);
       });
     `,
-    JSON.stringify(payload),
-  ]);
+      JSON.stringify(payload),
+    ],
+    undefined,
+    {
+      operation: `sandbox:${String(payload.operation ?? "unknown")}`,
+      containerId: container.id,
+    },
+  );
+
+  logger.debug("In-app agent docker sandbox tool call result", {
+    containerId: container.id,
+    payload: summarizePayload(payload),
+    result,
+  });
 
   if (result && typeof result === "object" && "result" in result) {
     return result.result;
@@ -256,8 +393,9 @@ async function execJsonInContainer(
   container: Docker.Container,
   cmd: string[],
   timeoutMs?: number,
+  context?: DockerExecContext,
 ) {
-  const result = await execInContainer(container, cmd, timeoutMs);
+  const result = await execInContainer(container, cmd, timeoutMs, context);
   if (result.exitCode !== 0) {
     throw new Error(
       result.stderr || result.stdout || "Container command failed",
@@ -270,18 +408,65 @@ async function execInContainer(
   container: Docker.Container,
   cmd: string[],
   timeoutMs?: number,
+  context?: DockerExecContext,
 ): Promise<DockerExecResult> {
+  logger.debug("In-app agent docker sandbox exec create", {
+    containerId: container.id,
+    operation: context?.operation ?? "unknown",
+    attempt: context?.attempt,
+    timeoutMs: timeoutMs ?? null,
+    commandPreview: summarizeCommand(cmd),
+  });
   const exec = await container.exec({
     Cmd: cmd,
     AttachStdout: true,
     AttachStderr: true,
     WorkingDir: "/workspace",
   });
+  logger.debug("In-app agent docker sandbox exec created", {
+    containerId: container.id,
+    operation: context?.operation ?? "unknown",
+    attempt: context?.attempt,
+  });
   const stream = await exec.start({ Tty: false });
+  logger.debug("In-app agent docker sandbox exec stream started", {
+    containerId: container.id,
+    operation: context?.operation ?? "unknown",
+    attempt: context?.attempt,
+  });
 
   const stdout = new PassThrough();
   const stderr = new PassThrough();
   container.modem.demuxStream(stream, stdout, stderr);
+  const finalizeDemuxStreams = () => {
+    stdout.end();
+    stderr.end();
+  };
+  stream.once("end", () => {
+    logger.debug("In-app agent docker sandbox exec stream end", {
+      containerId: container.id,
+      operation: context?.operation ?? "unknown",
+      attempt: context?.attempt,
+    });
+    finalizeDemuxStreams();
+  });
+  stream.once("close", () => {
+    logger.debug("In-app agent docker sandbox exec stream close", {
+      containerId: container.id,
+      operation: context?.operation ?? "unknown",
+      attempt: context?.attempt,
+    });
+    finalizeDemuxStreams();
+  });
+  stream.once("error", (error) => {
+    logger.debug("In-app agent docker sandbox exec stream error", {
+      containerId: container.id,
+      operation: context?.operation ?? "unknown",
+      attempt: context?.attempt,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    finalizeDemuxStreams();
+  });
 
   const timeoutId = timeoutMs
     ? setTimeout(
@@ -295,21 +480,126 @@ async function execInContainer(
 
   try {
     const [stdoutBytes, stderrBytes, inspect] = await Promise.all([
-      readStreamToUint8Array(stdout),
-      readStreamToUint8Array(stderr),
-      waitForStreamEnd(stream).then(() => exec.inspect()),
+      readStreamToUint8Array(stdout).then((bytes) => {
+        logger.debug("In-app agent docker sandbox exec stdout complete", {
+          containerId: container.id,
+          operation: context?.operation ?? "unknown",
+          attempt: context?.attempt,
+          bytes: bytes.length,
+        });
+        return bytes;
+      }),
+      readStreamToUint8Array(stderr).then((bytes) => {
+        logger.debug("In-app agent docker sandbox exec stderr complete", {
+          containerId: container.id,
+          operation: context?.operation ?? "unknown",
+          attempt: context?.attempt,
+          bytes: bytes.length,
+        });
+        return bytes;
+      }),
+      waitForStreamEnd(stream).then(async () => {
+        logger.debug("In-app agent docker sandbox exec inspect start", {
+          containerId: container.id,
+          operation: context?.operation ?? "unknown",
+          attempt: context?.attempt,
+        });
+        const inspect = await exec.inspect();
+        logger.debug("In-app agent docker sandbox exec inspect complete", {
+          containerId: container.id,
+          operation: context?.operation ?? "unknown",
+          attempt: context?.attempt,
+          exitCode: inspect.ExitCode ?? 1,
+        });
+        return inspect;
+      }),
     ]);
+
+    const stdoutText = Buffer.from(stdoutBytes).toString("utf8");
+    const stderrText = Buffer.from(stderrBytes).toString("utf8");
+    logger.debug("In-app agent docker sandbox exec complete", {
+      containerId: container.id,
+      operation: context?.operation ?? "unknown",
+      attempt: context?.attempt,
+      exitCode: inspect.ExitCode ?? 1,
+      stdoutPreview: summarizeText(stdoutText),
+      stderrPreview: summarizeText(stderrText),
+    });
 
     return {
       exitCode: inspect.ExitCode ?? 1,
-      stdout: Buffer.from(stdoutBytes).toString("utf8"),
-      stderr: Buffer.from(stderrBytes).toString("utf8"),
+      stdout: stdoutText,
+      stderr: stderrText,
     };
   } finally {
     if (timeoutId) {
       clearTimeout(timeoutId);
     }
   }
+}
+
+function summarizePayload(payload: Record<string, unknown>) {
+  if (payload.operation === "read") {
+    return {
+      operation: payload.operation,
+      path: payload.path,
+      toolCallFileCount: Array.isArray(payload.toolCallFiles)
+        ? payload.toolCallFiles.length
+        : 0,
+    };
+  }
+
+  if (payload.operation === "write") {
+    return {
+      operation: payload.operation,
+      path: payload.path,
+      contentBytes:
+        typeof payload.content === "string"
+          ? Buffer.byteLength(payload.content, "utf8")
+          : null,
+      toolCallFileCount: Array.isArray(payload.toolCallFiles)
+        ? payload.toolCallFiles.length
+        : 0,
+    };
+  }
+
+  if (payload.operation === "edit") {
+    return {
+      operation: payload.operation,
+      path: payload.path,
+      oldTextLength:
+        typeof payload.oldText === "string" ? payload.oldText.length : null,
+      newTextLength:
+        typeof payload.newText === "string" ? payload.newText.length : null,
+      toolCallFileCount: Array.isArray(payload.toolCallFiles)
+        ? payload.toolCallFiles.length
+        : 0,
+    };
+  }
+
+  if (payload.operation === "bash") {
+    return {
+      operation: payload.operation,
+      timeoutMs: payload.timeoutMs,
+      command:
+        typeof payload.command === "string"
+          ? summarizeText(payload.command)
+          : null,
+      toolCallFileCount: Array.isArray(payload.toolCallFiles)
+        ? payload.toolCallFiles.length
+        : 0,
+    };
+  }
+
+  return payload;
+}
+
+function summarizeCommand(cmd: string[]) {
+  return summarizeText(cmd.join(" "));
+}
+
+function summarizeText(text: string, maxLength = 500) {
+  return text.length <= maxLength ? text : `${text.slice(0, maxLength)}...`;
 }
 
 async function readStreamToUint8Array(stream: NodeJS.ReadableStream) {
@@ -326,4 +616,49 @@ async function waitForStreamEnd(stream: NodeJS.ReadableStream) {
     stream.once("error", reject);
     stream.once("close", resolve);
   });
+}
+
+async function readContainerLogs(container: Docker.Container) {
+  const logs = await container.logs({
+    stdout: true,
+    stderr: true,
+    tail: 50,
+  });
+
+  const content = Buffer.isBuffer(logs)
+    ? logs.toString("utf8")
+    : Buffer.from(await readStreamToUint8Array(logs)).toString("utf8");
+  const trimmed = content.trim();
+
+  if (!trimmed) {
+    return null;
+  }
+
+  return trimmed.split(/\r?\n/).slice(-10).join(" | ");
+}
+
+function formatContainerState(inspect: DockerContainerInspect) {
+  const state = inspect.State;
+  if (!state) {
+    return "state unavailable";
+  }
+
+  return [
+    `status=${state.Status ?? "unknown"}`,
+    `running=${String(state.Running ?? false)}`,
+    `exitCode=${String(state.ExitCode ?? "unknown")}`,
+    ...(state.Error ? [`error=${state.Error}`] : []),
+  ].join(", ");
+}
+
+function isMissingDockerImageError(error: unknown) {
+  return (
+    Boolean(error) &&
+    typeof error === "object" &&
+    "statusCode" in error &&
+    error.statusCode === 404 &&
+    "message" in error &&
+    typeof error.message === "string" &&
+    error.message.includes("No such image")
+  );
 }

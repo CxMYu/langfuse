@@ -6,7 +6,8 @@ RUN addgroup -S sandbox && adduser -S sandbox -G sandbox
 WORKDIR /app
 
 COPY package.json ./package.json
-RUN npm install --omit=dev
+RUN node -e 'const fs = require("node:fs"); const pkg = JSON.parse(fs.readFileSync("package.json", "utf8")); fs.writeFileSync("package.json", JSON.stringify({ name: pkg.name, private: true, type: pkg.type, dependencies: pkg.dependencies }, null, 2));' \
+  && npm install --omit=dev
 
 COPY --chown=sandbox:sandbox dist ./dist
 

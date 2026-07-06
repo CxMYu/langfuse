@@ -9,6 +9,6 @@ Endpoints:
 
 See `web/src/ee/features/in-app-agent/README.md` for how this package fits into the in-app agent sandbox architecture.
 
-Build the package and local image with:
+To rebuild it manually:
 
-`pnpm --filter @repo/in-app-agent-sandbox-server build && docker build "packages/in-app-agent-sandbox-server" -t langfuse-in-app-agent-sandbox:latest`
+`pnpm turbo run build:docker-image --filter @repo/in-app-agent-sandbox-server --force`

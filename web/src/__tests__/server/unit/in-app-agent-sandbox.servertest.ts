@@ -1,10 +1,13 @@
 import { EventType } from "@ag-ui/core";
+import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as LambdaMicrovmsModule from "@aws-sdk/client-lambda-microvms";
+import type Docker from "dockerode";
 import type * as SharedServerModule from "@langfuse/shared/src/server";
 
 import { getSandboxToolCallFiles } from "@/src/ee/features/in-app-agent/server/persistence";
 import {
+  createDockerSandboxProvider,
   createInAppAgentSandbox,
   createLambdaMicrovmSandboxProvider,
   type SandboxProvider,
@@ -12,6 +15,138 @@ import {
 
 const lambdaMicrovmsSendMock = vi.fn();
 const fetchMock = vi.fn();
+const dockerMockState = vi.hoisted(() => {
+  type ContainerState = {
+    id: string;
+    running: boolean;
+    logs?: string;
+    start: ReturnType<typeof vi.fn>;
+    putArchive: ReturnType<typeof vi.fn>;
+    remove: ReturnType<typeof vi.fn>;
+    getArchive: ReturnType<typeof vi.fn>;
+    exec: ReturnType<typeof vi.fn>;
+    inspect: ReturnType<typeof vi.fn>;
+  };
+
+  const toContainerHandle = (container: ContainerState) => ({
+    id: container.id,
+    start: container.start,
+    putArchive: container.putArchive,
+    remove: container.remove,
+    getArchive: container.getArchive,
+    exec: container.exec,
+    inspect: container.inspect,
+    logs: vi.fn(async () => Buffer.from(container.logs ?? "", "utf8")),
+    modem: {
+      demuxStream: (
+        stream: NodeJS.ReadableStream,
+        stdout: NodeJS.WritableStream,
+        stderr: NodeJS.WritableStream,
+      ) => {
+        stream.pipe(stdout);
+        stream.on("end", () => stderr.end());
+        stream.on("close", () => stderr.end());
+      },
+    },
+  });
+
+  const containers = new Map<string, ContainerState>();
+  let nextId = 1;
+
+  const createExec = (container: ContainerState, cmd: string[]) => {
+    const isHealthCheck = cmd.join(" ").includes("/health");
+    const stdout = isHealthCheck ? '{"status":"ok"}' : "null";
+    const stderr = "";
+    const exitCode = container.running ? 0 : 1;
+
+    return {
+      start: vi.fn(async () => {
+        const stream = new PassThrough();
+        queueMicrotask(() => {
+          if (exitCode === 0) {
+            stream.write(stdout);
+          } else {
+            stream.write(stderr || "container not running");
+          }
+          stream.end();
+        });
+        return stream;
+      }),
+      inspect: vi.fn(async () => ({ ExitCode: exitCode })),
+      stdout,
+      stderr: stderr || (exitCode === 0 ? "" : "container not running"),
+    };
+  };
+
+  const registerContainer = (params?: {
+    id?: string;
+    running?: boolean;
+    logs?: string;
+  }) => {
+    const id = params?.id ?? `container-${nextId++}`;
+    const container: ContainerState = {
+      id,
+      running: params?.running ?? false,
+      logs: params?.logs,
+      start: vi.fn(async () => {
+        container.running = true;
+      }),
+      putArchive: vi.fn(async () => undefined),
+      remove: vi.fn(async () => {
+        containers.delete(id);
+      }),
+      getArchive: vi.fn(async () => new PassThrough()),
+      exec: vi.fn(async ({ Cmd }: { Cmd: string[] }) =>
+        createExec(container, Cmd),
+      ),
+      inspect: vi.fn(async () => ({
+        Id: id,
+        State: {
+          Running: container.running,
+          Status: container.running ? "running" : "exited",
+          ExitCode: container.running ? 0 : 137,
+          Error: container.running ? "" : "container exited",
+        },
+      })),
+    };
+    containers.set(id, container);
+    return container;
+  };
+
+  const dockerApi = {
+    createContainer: vi.fn(async () => toContainerHandle(registerContainer())),
+    getContainer: vi.fn((id: string) => {
+      const container = containers.get(id);
+      if (!container) {
+        throw new Error(`Unknown container: ${id}`);
+      }
+      return toContainerHandle(
+        container,
+      ) satisfies Partial<Docker.Container> & {
+        id: string;
+        modem: { demuxStream: Docker.Container["modem"]["demuxStream"] };
+      };
+    }),
+  };
+
+  return {
+    dockerApi,
+    registerContainer,
+    reset() {
+      containers.clear();
+      nextId = 1;
+      dockerApi.createContainer.mockClear();
+      dockerApi.getContainer.mockClear();
+    },
+  };
+});
+
+vi.mock("dockerode", () => ({
+  default: class MockDocker {
+    createContainer = dockerMockState.dockerApi.createContainer;
+    getContainer = dockerMockState.dockerApi.getContainer;
+  },
+}));
 
 vi.mock("@aws-sdk/client-lambda-microvms", async () => {
   const actual = (await vi.importActual(
@@ -51,6 +186,7 @@ describe("in-app agent sandbox", () => {
   afterEach(() => {
     lambdaMicrovmsSendMock.mockReset();
     fetchMock.mockReset();
+    dockerMockState.reset();
     vi.unstubAllGlobals();
     vi.useRealTimers();
   });
@@ -308,6 +444,32 @@ describe("in-app agent sandbox", () => {
         ),
       },
     ]);
+  });
+
+  it("recreates stopped docker sandbox sessions instead of waiting for them", async () => {
+    vi.useRealTimers();
+
+    const stoppedContainer = dockerMockState.registerContainer({
+      id: "stopped-session",
+      running: false,
+    });
+    const provider = createDockerSandboxProvider({
+      image: "langfuse-in-app-agent-sandbox:latest",
+      snapshotStore: {
+        getSnapshot: async () => null,
+        putSnapshot: async () => undefined,
+        deleteSnapshot: async () => undefined,
+      },
+    });
+
+    const session = await provider.ensureSession({
+      sessionId: stoppedContainer.id,
+      snapshotKey: "snapshots/conversation-1.tar",
+    });
+
+    expect(session.sessionId).not.toBe(stoppedContainer.id);
+    expect(stoppedContainer.exec).not.toHaveBeenCalled();
+    expect(dockerMockState.dockerApi.createContainer).toHaveBeenCalledTimes(1);
   });
 
   it("reconnects to a running lambda microvm after recreating the provider", async () => {

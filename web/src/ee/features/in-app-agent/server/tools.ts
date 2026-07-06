@@ -331,6 +331,7 @@ export const IN_APP_AGENT_AUTO_APPROVED_TOOL_NAMES = new Set([
     .filter(([, policy]) => policy.approval === "auto")
     .map(([toolName]) => `langfuse_${toolName}`),
   ...IN_APP_AGENT_AUTO_APPROVED_EXTERNAL_TOOL_NAMES,
+  ...IN_APP_AGENT_SANDBOX_TOOL_NAMES,
 ]);
 
 export function isMcpToolName(input: string): input is McpToolName {

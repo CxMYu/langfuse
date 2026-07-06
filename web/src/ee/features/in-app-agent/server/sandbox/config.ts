@@ -6,6 +6,8 @@ import { createDockerSandboxProvider } from "./providers/docker";
 import { createLambdaMicrovmSandboxProvider } from "./providers/lambdaMicrovm";
 import { env } from "@/src/env.mjs";
 
+const LOCAL_SANDBOX_IMAGE = "langfuse-in-app-agent-sandbox:latest";
+
 export type InAppAgentSandboxProviderType =
   | "dangerous-docker"
   | "lambda-microvm";
@@ -70,7 +72,7 @@ function getInAppAgentSandboxProvider(
 ) {
   if (providerType === "dangerous-docker") {
     return createDockerSandboxProvider({
-      image: env.LANGFUSE_IN_APP_AGENT_SANDBOX_DOCKER_IMAGE,
+      image: LOCAL_SANDBOX_IMAGE,
       snapshotStore: getInAppAgentSandboxSnapshotStore(providerType),
     });
   }
