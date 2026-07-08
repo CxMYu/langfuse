@@ -151,6 +151,9 @@ importers:
 
   packages/in-app-agent-sandbox-runtime:
     dependencies:
+      '@aws-sdk/client-s3':
+        specifier: ^3.896.0
+        version: 3.1056.0
       zod:
         specifier: 4.3.6
         version: 4.3.6
@@ -1637,10 +1640,6 @@ packages:
 
   '@aws-sdk/signature-v4-multi-region@3.996.30':
     resolution: {integrity: sha512-HULDLMVzkmTSEv6//7kx2kRevp/VYUpm8hJNNFbmhxDn0fUiGTxVcM9yg31TukvTq8nyOBDUN2gH0o5IRbKjdw==}
-    engines: {node: '>=20.0.0'}
-
-  '@aws-sdk/signature-v4-multi-region@3.996.35':
-    resolution: {integrity: sha512-6L/VWs+Wch2stHemCGTmUNqKLMzURxQDK5boNG3Jn3kAOp71meDUuS5sbObpEvFxHDq0uWeSLFDNSYsjNt+Dlg==}
     engines: {node: '>=20.0.0'}
 
   '@aws-sdk/signature-v4-multi-region@3.996.38':
@@ -12654,20 +12653,20 @@ snapshots:
       '@aws-crypto/sha1-browser': 5.2.0
       '@aws-crypto/sha256-browser': 5.2.0
       '@aws-crypto/sha256-js': 5.2.0
-      '@aws-sdk/core': 3.974.15
-      '@aws-sdk/credential-provider-node': 3.972.47
+      '@aws-sdk/core': 3.974.26
+      '@aws-sdk/credential-provider-node': 3.972.61
       '@aws-sdk/middleware-bucket-endpoint': 3.972.27
       '@aws-sdk/middleware-expect-continue': 3.972.23
       '@aws-sdk/middleware-flexible-checksums': 3.974.33
       '@aws-sdk/middleware-location-constraint': 3.972.20
       '@aws-sdk/middleware-sdk-s3': 3.972.54
       '@aws-sdk/middleware-ssec': 3.972.20
-      '@aws-sdk/signature-v4-multi-region': 3.996.30
-      '@aws-sdk/types': 3.973.9
-      '@smithy/core': 3.24.5
-      '@smithy/fetch-http-handler': 5.4.5
-      '@smithy/node-http-handler': 4.7.5
-      '@smithy/types': 4.14.2
+      '@aws-sdk/signature-v4-multi-region': 3.996.38
+      '@aws-sdk/types': 3.973.15
+      '@smithy/core': 3.29.0
+      '@smithy/fetch-http-handler': 5.6.2
+      '@smithy/node-http-handler': 4.9.2
+      '@smithy/types': 4.15.1
       tslib: 2.8.1
 
   '@aws-sdk/client-sesv2@3.1045.0':
@@ -13065,7 +13064,7 @@ snapshots:
   '@aws-sdk/middleware-sdk-s3@3.972.54':
     dependencies:
       '@aws-sdk/core': 3.974.26
-      '@aws-sdk/signature-v4-multi-region': 3.996.35
+      '@aws-sdk/signature-v4-multi-region': 3.996.38
       '@aws-sdk/types': 3.973.15
       '@smithy/core': 3.29.0
       '@smithy/types': 4.15.1
@@ -13111,7 +13110,7 @@ snapshots:
       '@aws-crypto/sha256-browser': 5.2.0
       '@aws-crypto/sha256-js': 5.2.0
       '@aws-sdk/core': 3.974.26
-      '@aws-sdk/signature-v4-multi-region': 3.996.30
+      '@aws-sdk/signature-v4-multi-region': 3.996.38
       '@aws-sdk/types': 3.973.15
       '@smithy/core': 3.29.0
       '@smithy/fetch-http-handler': 5.6.2
@@ -13152,13 +13151,6 @@ snapshots:
     dependencies:
       '@aws-sdk/types': 3.973.15
       '@smithy/signature-v4': 5.4.5
-      '@smithy/types': 4.15.1
-      tslib: 2.8.1
-
-  '@aws-sdk/signature-v4-multi-region@3.996.35':
-    dependencies:
-      '@aws-sdk/types': 3.973.15
-      '@smithy/signature-v4': 5.5.2
       '@smithy/types': 4.15.1
       tslib: 2.8.1
 
